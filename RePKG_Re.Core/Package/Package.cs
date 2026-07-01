@@ -1,0 +1,12 @@
+using System.Collections.Generic;
+
+namespace RePKG_Re.Core.Package
+{
+    public class Package
+    {
+        public string Magic { get; set; }
+        public int HeaderSize { get; set; }
+
+        public List<PackageEntry> Entries { get; } = new List<PackageEntry>();
+    }
+}

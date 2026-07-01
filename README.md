@@ -1,4 +1,11 @@
-# RePKG
+# RePKG_Re
+
+A fork of [RePKG](https://github.com/notscuffed/repkg) by ReZe20.
+
+Modified .pkg extractor and .tex converter for [Wallpaper Engine](https://www.wallpaperengine.io/) wallpapers.
+
+Original author: NotScuffed (2019-2025)  
+Fork maintainer: ReZe20 (2025)
 Wallpaper engine PKG unpacker/TEX converter, written in C#.
 
 PKG and TEX formats reverse engineered by me.

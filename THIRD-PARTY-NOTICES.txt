@@ -1,4 +1,4 @@
-══════════════════ List of 3rd party libs/code used by RePKG  ══════════════════
+═══ List of 3rd party libs/code used by RePKG_Re (forked from RePKG by NotScuffed)  ═══
 
 * CommandLineParser (https://github.com/commandlineparser/commandline)
 * DXT Decompression code by Xalcon @ mmowned.com-Forum
@@ -6,7 +6,7 @@
 * Newtonsoft.Json (https://github.com/JamesNK/Newtonsoft.Json)
 * ImageSharp (https://github.com/SixLabors/ImageSharp)
 
-════════════════ Licenses for 3rd party libs/code used by RePKG ════════════════
+═══ Licenses for 3rd party libs/code used by RePKG_Re ═══
 
 
 ═════ CommandLineParser

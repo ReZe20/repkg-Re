@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <RootNamespace>RePKG_Re</RootNamespace>
+        <AssemblyName>RePKG_Re</AssemblyName>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net8.0</TargetFramework>
+        <Version>0.4.0</Version>
+        <Copyright>Copyright © NotScuffed 2025, ReZe20 2025</Copyright>
+    </PropertyGroup>
+    
+    <ItemGroup>
+        <ProjectReference Include="..\RePKG_Re.Application\RePKG_Re.Application.csproj" />
+        <ProjectReference Include="..\RePKG_Re.Core\RePKG_Re.Core.csproj" />
+    </ItemGroup>
+    
+    <ItemGroup>
+        <PackageReference Include="CommandLineParser" Version="2.9.1" />
+    </ItemGroup>
+    
+    <ItemGroup>
+      <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="$(ProjectDir)/../THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+</Project>

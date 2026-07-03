@@ -183,6 +183,12 @@ namespace RePKG_Re.Command
 
         private static void ExtractPkg(FileInfo file, bool appendFolderName = false, string defaultProjectName = "")
         {
+            if (_options.Lazy)
+            {
+                ExtractPkgLazy(file, appendFolderName, defaultProjectName);
+                return;
+            }
+
             Console.WriteLine($"\r\n### Extracting package: {file.FullName}");
 
             // Load package
@@ -204,9 +210,13 @@ namespace RePKG_Re.Command
             // Extract package entries
             var entriesList = FilterEntries(package.Entries).ToList();
             var totalEntries = entriesList.Count;
+
+            // 输出 wallpaper 级进度头（阶段5）
+            Console.WriteLine($"{{\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{totalEntries}}}");
+
             for (int i = 0; i < totalEntries; i++)
             {
-                ExtractEntry(entriesList[i], ref outputDirectory);
+                ExtractEntry(entriesList[i], ref outputDirectory, i + 1, totalEntries);
                 Console.WriteLine($"{{\"pos\":{i + 1},\"total\":{totalEntries}}}");
             }
 
@@ -219,6 +229,73 @@ namespace RePKG_Re.Command
                 ProjectFiles.Contains(x.Name, StringComparer.OrdinalIgnoreCase));
 
             CopyFiles(files, outputDirectory);
+        }
+
+        /// <summary>
+        /// Lazy/chunked mode: entries are read one by one from stream, not preloaded into memory.
+        /// </summary>
+        private static void ExtractPkgLazy(FileInfo file, bool appendFolderName, string defaultProjectName)
+        {
+            Console.WriteLine($"\r\n### Extracting package (lazy): {file.FullName}");
+
+            string outputDirectory;
+            var preview = string.Empty;
+            if (appendFolderName)
+                GetProjectFolderNameAndPreviewImage(file, defaultProjectName, out outputDirectory, out preview);
+            else
+                outputDirectory = _options.OutputDirectory;
+
+            using (var stream = file.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                var packageStart = stream.Position;
+                // skip magic (length-prefixed string, typically "PKG ")
+                var magicLen = reader.ReadInt32();
+                reader.ReadBytes(magicLen);
+
+                var entries = new List<PackageEntry>();
+                var entryCount = reader.ReadInt32();
+                for (var i = 1; i <= entryCount; i++)
+                {
+                    var pathLen = reader.ReadInt32();
+                    var fullPath = Encoding.UTF8.GetString(reader.ReadBytes(pathLen));
+                    entries.Add(new PackageEntry
+                    {
+                        FullPath = fullPath,
+                        Offset = reader.ReadInt32(),
+                        Length = reader.ReadInt32(),
+                        Type = PackageEntryTypeGetter.GetFromFileName(fullPath)
+                    });
+                }
+
+                var dataStart = (int)(stream.Position - packageStart);
+
+                var entriesList = FilterEntries(entries).ToList();
+                var totalEntries = entriesList.Count;
+
+                Console.WriteLine($"{{\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{totalEntries}}}");
+
+                for (int i = 0; i < totalEntries; i++)
+                {
+                    var entry = entriesList[i];
+                    var bytes = PackageReader.ReadEntryBytesFromStream(stream, dataStart, entry.Offset, entry.Length);
+                    entry.Bytes = bytes;
+
+                    ExtractEntry(entry, ref outputDirectory, i + 1, totalEntries);
+                    Console.WriteLine($"{{\"pos\":{i + 1},\"total\":{totalEntries}}}");
+
+                    entry.Bytes = null; // free memory after processing
+                }
+            }
+
+            // Copy project files
+            if (_options.CopyProject && !_options.SingleDir && file.Directory != null)
+            {
+                var files = file.Directory.GetFiles().Where(x =>
+                    x.Name.Equals(preview, StringComparison.OrdinalIgnoreCase) ||
+                    ProjectFiles.Contains(x.Name, StringComparer.OrdinalIgnoreCase));
+                CopyFiles(files, outputDirectory);
+            }
         }
 
         private static void CopyFiles(IEnumerable<FileInfo> files, string outputDirectory)
@@ -239,25 +316,38 @@ namespace RePKG_Re.Command
 
         private static IEnumerable<PackageEntry> FilterEntries(IEnumerable<PackageEntry> entries)
         {
+            IEnumerable<PackageEntry> filtered = entries;
+
             if (!string.IsNullOrEmpty(_options.IgnoreExts))
             {
-                return from entry in entries
-                    where !_skipExtArray.Any(s => entry.FullPath.EndsWith(s, StringComparison.OrdinalIgnoreCase))
-                    select entry;
+                filtered = filtered.Where(entry =>
+                    !_skipExtArray.Any(s => entry.FullPath.EndsWith(s, StringComparison.OrdinalIgnoreCase)));
             }
 
             if (!string.IsNullOrEmpty(_options.OnlyExts))
             {
-                return from entry in entries
-                    where _onlyExtArray.Any(s => entry.FullPath.EndsWith(s, StringComparison.OrdinalIgnoreCase))
-                    select entry;
+                filtered = filtered.Where(entry =>
+                    _onlyExtArray.Any(s => entry.FullPath.EndsWith(s, StringComparison.OrdinalIgnoreCase)));
             }
 
-            return entries;
+            // 按文件大小过滤（阶段3）
+            if (_options.MaxEntrySize > 0)
+            {
+                long maxBytes = _options.MaxEntrySize * 1024;
+                filtered = filtered.Where(entry => entry.Length <= maxBytes);
+            }
+
+            if (_options.MinEntrySize > 0)
+            {
+                long minBytes = _options.MinEntrySize * 1024;
+                filtered = filtered.Where(entry => entry.Length >= minBytes);
+            }
+
+            return filtered;
         }
 
         [SuppressMessage("ReSharper", "AssignNullToNotNullAttribute")]
-        private static void ExtractEntry(PackageEntry entry, ref string outputDirectory)
+        private static void ExtractEntry(PackageEntry entry, ref string outputDirectory, int currentPos, int totalEntries)
         {
             if (Program.Closing)
                 Environment.Exit(0);
@@ -283,6 +373,9 @@ namespace RePKG_Re.Command
             // convert and save
             if (_options.NoTexConvert || entry.Type != EntryType.Tex)
                 return;
+
+            // 输出 entry 级进度（阶段5）
+            Console.WriteLine($"{{\"type\":\"entry\",\"pos\":{currentPos},\"total\":{totalEntries},\"action\":\"converting\",\"entry\":\"{entry.FullPath}\"}}");
 
             var tex = LoadTex(entry.Bytes, entry.FullPath);
 
@@ -411,6 +504,16 @@ namespace RePKG_Re.Command
 
         [Option("overwrite", HelpText = "Overwrite all existing files")]
         public bool Overwrite { get; set; }
+
+        [Option("lazy", HelpText = "Lazy/chunked mode: read entries one by one instead of loading all into memory")]
+        public bool Lazy { get; set; }
+
+        [Option("max-entry-size", HelpText = "Skip entries larger than specified size (KB)", Default = 0L)]
+        public long MaxEntrySize { get; set; }
+
+        [Option("min-entry-size", HelpText = "Skip entries smaller than specified size (KB)", Default = 0L)]
+        public long MinEntrySize { get; set; }
+
 
         [Value(0, Required = true, HelpText = "Path to file/directory", MetaName = "Input")]
         public string Input { get; set; }

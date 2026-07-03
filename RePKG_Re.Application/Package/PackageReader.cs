@@ -59,5 +59,22 @@ namespace RePKG_Re.Application.Package
                 entry.Bytes = reader.ReadBytes(entry.Length);
             }
         }
+
+        /// <summary>
+        /// 从流中读取单个 entry 的原始字节数据，用于 lazy 分块模式。
+        /// </summary>
+        public static byte[] ReadEntryBytesFromStream(Stream stream, int dataStart, int offset, int length)
+        {
+            stream.Seek(offset + dataStart, SeekOrigin.Begin);
+            var buffer = new byte[length];
+            int totalRead = 0;
+            while (totalRead < length)
+            {
+                int read = stream.Read(buffer, totalRead, length - totalRead);
+                if (read == 0) throw new EndOfStreamException();
+                totalRead += read;
+            }
+            return buffer;
+        }
     }
 }

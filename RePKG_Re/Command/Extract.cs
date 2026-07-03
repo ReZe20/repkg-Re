@@ -202,10 +202,12 @@ namespace RePKG_Re.Command
                 outputDirectory = _options.OutputDirectory;
 
             // Extract package entries
-            var entries = FilterEntries(package.Entries);
-            foreach (var entry in entries)
+            var entriesList = FilterEntries(package.Entries).ToList();
+            var totalEntries = entriesList.Count;
+            for (int i = 0; i < totalEntries; i++)
             {
-                ExtractEntry(entry, ref outputDirectory);
+                ExtractEntry(entriesList[i], ref outputDirectory);
+                Console.WriteLine($"{{\"pos\":{i + 1},\"total\":{totalEntries}}}");
             }
 
             // Copy project files project.json/preview image

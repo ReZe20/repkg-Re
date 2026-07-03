@@ -51,21 +51,22 @@ namespace RePKG_Re.Application.Texture
 
             if (format.IsRawFormat())
             {
-                var image = ImageFromRawFormat(format, sourceMipmap.Bytes, sourceMipmap.Width, sourceMipmap.Height);
-
-                if (sourceMipmap.Width != tex.Header.ImageWidth ||
-                    sourceMipmap.Height != tex.Header.ImageHeight)
-                    image.Mutate(x => x.Crop(tex.Header.ImageWidth, tex.Header.ImageHeight));
-
-                using (var memoryStream = new MemoryStream())
+                using (var image = ImageFromRawFormat(format, sourceMipmap.Bytes, sourceMipmap.Width, sourceMipmap.Height))
                 {
-                    image.SaveAsPng(memoryStream);
+                    if (sourceMipmap.Width != tex.Header.ImageWidth ||
+                        sourceMipmap.Height != tex.Header.ImageHeight)
+                        image.Mutate(x => x.Crop(tex.Header.ImageWidth, tex.Header.ImageHeight));
 
-                    return new ImageResult
+                    using (var memoryStream = new MemoryStream())
                     {
-                        Bytes = memoryStream.ToArray(),
-                        Format = MipmapFormat.ImagePNG
-                    };
+                        image.SaveAsPng(memoryStream);
+
+                        return new ImageResult
+                        {
+                            Bytes = memoryStream.ToArray(),
+                            Format = MipmapFormat.ImagePNG
+                        };
+                    }
                 }
             }
 
@@ -101,57 +102,54 @@ namespace RePKG_Re.Application.Texture
                 throw new InvalidOperationException(
                     "Only raw mipmap formats are supported right now while converting gif");
 
-            var image = ImageFromRawFormat(frameFormat, null,
+            using (var image = ImageFromRawFormat(frameFormat, null,
                 tex.FrameInfoContainer.GifWidth,
-                tex.FrameInfoContainer.GifHeight);
-            
-            var sequenceImages = new Image[tex.ImagesContainer.Images.Count];
-
-            for (var i = 0; i < sequenceImages.Length; i++)
+                tex.FrameInfoContainer.GifHeight))
             {
-                var mipmap = tex.ImagesContainer.Images[i].FirstMipmap;
-                sequenceImages[i] = ImageFromRawFormat(frameFormat, mipmap.Bytes, mipmap.Width, mipmap.Height);
-            }
-
-            foreach (var frameInfo in tex.FrameInfoContainer.Frames)
-            {
-                // Frames can be turned to fit into the map so we need to compute cropping coordinates first
-                // We're keeping width and height signed for the rotation angle calculation
-                var width = frameInfo.Width != 0 ? frameInfo.Width : frameInfo.HeightX;
-                var height = frameInfo.Height != 0 ? frameInfo.Height : frameInfo.WidthY;
-                var x = Math.Min(frameInfo.X, frameInfo.X + width);
-                var y = Math.Min(frameInfo.Y, frameInfo.Y + height);
-
-                // This formula gives us the angle for which we need to turn the frame,
-                // assuming that either Width or HeightX is 0 (same with Height and WidthY)
-                var rotationAngle = -(Math.Atan2(Math.Sign(height), Math.Sign(width)) - Math.PI / 4);
-
-                var frame = sequenceImages[frameInfo.ImageId].Clone(
-                    context => context.Crop(new Rectangle(
-                        (int) x,
-                        (int) y,
-                        (int) Math.Abs(width),
-                        (int) Math.Abs(height))
-                    ).Rotate((float) Math.Round(rotationAngle * 180 / Math.PI)));
-
-                var metadata = frame.Frames.RootFrame.Metadata.GetFormatMetadata(GifFormat.Instance);
-                metadata.FrameDelay = (int) Math.Round(frameInfo.Frametime * 100.0f);
-
-                image.Frames.AddFrame(frame.Frames[0]);
-            }
-
-            // Remove first black frame
-            image.Frames.RemoveFrame(0);
-
-            using (var memoryStream = new MemoryStream())
-            {
-                image.SaveAsGif(memoryStream, new GifEncoder {ColorTableMode = GifColorTableMode.Local});
-
-                return new ImageResult
+                var sequenceImages = new Image[tex.ImagesContainer.Images.Count];
+                try
                 {
-                    Bytes = memoryStream.ToArray(),
-                    Format = MipmapFormat.ImageGIF
-                };
+                    for (var i = 0; i < sequenceImages.Length; i++)
+                    {
+                        var mipmap = tex.ImagesContainer.Images[i].FirstMipmap;
+                        sequenceImages[i] = ImageFromRawFormat(frameFormat, mipmap.Bytes, mipmap.Width, mipmap.Height);
+                    }
+
+                    foreach (var frameInfo in tex.FrameInfoContainer.Frames)
+                    {
+                        var width = frameInfo.Width != 0 ? frameInfo.Width : frameInfo.HeightX;
+                        var height = frameInfo.Height != 0 ? frameInfo.Height : frameInfo.WidthY;
+                        var x = Math.Min(frameInfo.X, frameInfo.X + width);
+                        var y = Math.Min(frameInfo.Y, frameInfo.Y + height);
+                        var rotationAngle = -(Math.Atan2(Math.Sign(height), Math.Sign(width)) - Math.PI / 4);
+
+                        using (var frame = sequenceImages[frameInfo.ImageId].Clone(
+                            context => context.Crop(new Rectangle((int)x, (int)y, (int)Math.Abs(width), (int)Math.Abs(height)))
+                            .Rotate((float)Math.Round(rotationAngle * 180 / Math.PI))))
+                        {
+                            var metadata = frame.Frames.RootFrame.Metadata.GetFormatMetadata(GifFormat.Instance);
+                            metadata.FrameDelay = (int)Math.Round(frameInfo.Frametime * 100.0f);
+                            image.Frames.AddFrame(frame.Frames[0]);
+                        }
+                    }
+
+                    image.Frames.RemoveFrame(0);
+
+                    using (var memoryStream = new MemoryStream())
+                    {
+                        image.SaveAsGif(memoryStream, new GifEncoder { ColorTableMode = GifColorTableMode.Local });
+                        return new ImageResult
+                        {
+                            Bytes = memoryStream.ToArray(),
+                            Format = MipmapFormat.ImageGIF
+                        };
+                    }
+                }
+                finally
+                {
+                    foreach (var seqImage in sequenceImages)
+                        seqImage?.Dispose();
+                }
             }
         }
 

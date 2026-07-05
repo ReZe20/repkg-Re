@@ -352,22 +352,25 @@ namespace RePKG_Re.Command
             if (Program.Closing)
                 Environment.Exit(0);
 
-            // save raw
+            // save raw (skip if only-tex-images mode)
             var filePathWithoutExtension = _options.SingleDir
                 ? Path.Combine(outputDirectory, entry.Name)
                 : Path.Combine(outputDirectory, entry.DirectoryPath, entry.Name);
 
-            var filePath = filePathWithoutExtension + entry.Extension;
-
             Directory.CreateDirectory(Path.GetDirectoryName(filePathWithoutExtension));
 
-            if (!_options.Overwrite && File.Exists(filePath))
-                Console.WriteLine($"* Skipping, already exists: {filePath}");
-            else
+            if (!_options.OnlyTexImages)
             {
-                Console.WriteLine($"* Extracting: {entry.FullPath}");
+                var filePath = filePathWithoutExtension + entry.Extension;
 
-                File.WriteAllBytes(filePath, entry.Bytes);
+                if (!_options.Overwrite && File.Exists(filePath))
+                    Console.WriteLine($"* Skipping, already exists: {filePath}");
+                else
+                {
+                    Console.WriteLine($"* Extracting: {entry.FullPath}");
+
+                    File.WriteAllBytes(filePath, entry.Bytes);
+                }
             }
 
             // convert and save
@@ -501,6 +504,9 @@ namespace RePKG_Re.Command
 
         [Option("no-tex-convert", HelpText = "Don't convert TEX files into images while extracting PKG")]
         public bool NoTexConvert { get; set; }
+
+        [Option('p', "only-tex-images", HelpText = "Only output converted TEX images; skip saving raw .tex files")]
+        public bool OnlyTexImages { get; set; }
 
         [Option("overwrite", HelpText = "Overwrite all existing files")]
         public bool Overwrite { get; set; }

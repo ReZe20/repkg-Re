@@ -24,8 +24,8 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: 发布 win-x64（自包含单文件）
-        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:PublishTrimmed=false -o publish/win-x64
+      - name: 发布 win-x64（框架依赖单文件）
+        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -o publish/win-x64
 
       - name: 打包 zip
         shell: pwsh

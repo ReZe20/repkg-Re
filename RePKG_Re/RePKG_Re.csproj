@@ -3,7 +3,8 @@
         <RootNamespace>RePKG_Re</RootNamespace>
         <AssemblyName>RePKG_Re</AssemblyName>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net8.0</TargetFramework>
+        <TargetFramework>net472</TargetFramework>
+        <LangVersion>latest</LangVersion>
         <Version>0.4.1</Version>
         <Authors>NotScuffed, ReZe20</Authors>
         <Copyright>Copyright © NotScuffed 2019-2025, ReZe20 2025-2026</Copyright>
@@ -16,6 +17,7 @@
     
     <ItemGroup>
         <PackageReference Include="CommandLineParser" Version="2.9.1" />
+        <PackageReference Include="Costura.Fody" Version="6.2.0" PrivateAssets="All" />
     </ItemGroup>
     
     <ItemGroup>

@@ -27,4 +27,13 @@
     <ItemGroup>
         <None Include="$(ProjectDir)/../THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
+
+    <!-- 发布后清理：只保留 exe 与 THIRD-PARTY-NOTICES.txt（依赖已由 Costura 内嵌）。
+         放在 csproj 而非 pubxml，确保 VS 发布（MSBuild）与命令行发布（dotnet publish）都生效 -->
+    <Target Name="CleanPublishOutput" AfterTargets="Publish">
+        <ItemGroup>
+            <FilesToRemove Include="$(PublishDir)*.dll;$(PublishDir)*.pdb;$(PublishDir)*.config;$(PublishDir)*.json" />
+        </ItemGroup>
+        <Delete Files="@(FilesToRemove)" />
+    </Target>
 </Project>

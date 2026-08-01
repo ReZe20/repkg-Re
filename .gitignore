@@ -4,6 +4,7 @@
 obj
 bin
 Publish
+*.csproj.user
 RePKG.Tests/Output/*
 RePKG.Tests/TestTextures/*
 RePKG.Tests/TestTexturesValidated/*

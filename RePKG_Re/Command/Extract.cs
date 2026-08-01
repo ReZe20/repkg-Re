@@ -352,14 +352,15 @@ namespace RePKG_Re.Command
             if (Program.Closing)
                 Environment.Exit(0);
 
-            // save raw (skip if only-tex-images mode)
+            // save raw (skip raw .tex write when only-tex-images mode)
             var filePathWithoutExtension = _options.SingleDir
                 ? Path.Combine(outputDirectory, entry.Name)
                 : Path.Combine(outputDirectory, entry.DirectoryPath, entry.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePathWithoutExtension));
 
-            if (!_options.OnlyTexImages)
+            bool skipRaw = _options.OnlyTexImages && entry.Type == EntryType.Tex;
+            if (!skipRaw)
             {
                 var filePath = filePathWithoutExtension + entry.Extension;
 

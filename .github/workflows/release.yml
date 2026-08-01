@@ -1,0 +1,41 @@
+name: 发布
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '手动触发的版本号（如 v0.4.1），留空则用分支名'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 发布 win-x64（自包含单文件）
+        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishReadyToRun=true -p:PublishTrimmed=false -o publish/win-x64
+
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          $ver = if ("${{ inputs.version }}") { "${{ inputs.version }}" } elseif ("${{ github.ref_name }}" -like "v*") { "${{ github.ref_name }}" } else { "dev" }
+          Compress-Archive -Path "publish/win-x64/*" -DestinationPath "RePKG_Re-$ver-win-x64.zip"
+          echo "version=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: RePKG_Re-${{ env.version }}-win-x64.zip
+          generate_release_notes: true

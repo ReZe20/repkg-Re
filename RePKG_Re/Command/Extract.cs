@@ -20,6 +20,10 @@ namespace RePKG_Re.Command
         private static ExtractOptions _options;
         private static string[] _skipExtArray;
         private static string[] _onlyExtArray;
+        // 输出层过滤（新增）：-i/-e 保持解析前过滤语义不变，
+        // --output-ignoreexts / --output-onlyexts 在写文件时按"输出文件扩展名"过滤
+        private static string[] _outputSkipExtArray;
+        private static string[] _outputOnlyExtArray;
         private static readonly string[] ProjectFiles = {"project.json"};
 
         private static readonly ITexReader _texReader;
@@ -47,9 +51,23 @@ namespace RePKG_Re.Command
 
             if (!string.IsNullOrEmpty(_options.IgnoreExts))
                 _skipExtArray = NormalizeExtensions(_options.IgnoreExts.Split(','));
+            else
+                _skipExtArray = null;
 
             if (!string.IsNullOrEmpty(_options.OnlyExts))
                 _onlyExtArray = NormalizeExtensions(_options.OnlyExts.Split(','));
+            else
+                _onlyExtArray = null;
+
+            if (!string.IsNullOrEmpty(_options.OutputIgnoreExts))
+                _outputSkipExtArray = NormalizeExtensions(_options.OutputIgnoreExts.Split(','));
+            else
+                _outputSkipExtArray = null;
+
+            if (!string.IsNullOrEmpty(_options.OutputOnlyExts))
+                _outputOnlyExtArray = NormalizeExtensions(_options.OutputOnlyExts.Split(','));
+            else
+                _outputOnlyExtArray = null;
 
             var fileInfo = new FileInfo(options.Input);
             var directoryInfo = new DirectoryInfo(options.Input);
@@ -278,6 +296,15 @@ namespace RePKG_Re.Command
                 for (int i = 0; i < totalEntries; i++)
                 {
                     var entry = entriesList[i];
+
+                    // 输出层预判：条目不可能产生任何命中过滤的输出文件时，跳过读取字节
+                    if (!ShouldReadEntryBytes(entry))
+                    {
+                        Console.WriteLine($"* Skipping (filtered): {entry.FullPath}");
+                        Console.WriteLine($"{{\"pos\":{i + 1},\"total\":{totalEntries}}}");
+                        continue;
+                    }
+
                     var bytes = PackageReader.ReadEntryBytesFromStream(stream, dataStart, entry.Offset, entry.Length);
                     entry.Bytes = bytes;
 
@@ -318,6 +345,7 @@ namespace RePKG_Re.Command
         {
             IEnumerable<PackageEntry> filtered = entries;
 
+            // -i/-e：解析前过滤（旧语义，保持不变）——按 pkg 内条目原始扩展名决定是否解析
             if (!string.IsNullOrEmpty(_options.IgnoreExts))
             {
                 filtered = filtered.Where(entry =>
@@ -346,21 +374,65 @@ namespace RePKG_Re.Command
             return filtered;
         }
 
+        /// <summary>
+        /// 输出层扩展名过滤（--output-ignoreexts / --output-onlyexts）：
+        /// 判断扩展名对应的输出文件是否应写出。
+        /// 忽略 命中 → 不输出；仅保留 非空且不命中 → 不输出。
+        /// 扩展名一律按带点形式比较（如 ".png"），大小写不敏感。
+        /// </summary>
+        private static bool ShouldOutputFile(string extension)
+        {
+            if (string.IsNullOrEmpty(extension)) return true;
+
+            var ext = extension.StartsWith(".") ? extension : "." + extension;
+
+            if (_outputSkipExtArray != null &&
+                _outputSkipExtArray.Any(s => ext.Equals(s, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            if (_outputOnlyExtArray != null &&
+                !_outputOnlyExtArray.Any(s => ext.Equals(s, StringComparison.OrdinalIgnoreCase)))
+                return false;
+
+            return true;
+        }
+
+        /// <summary>
+        /// lazy 模式的读取预判：条目不可能产生任何命中输出层过滤的文件时，跳过读取其字节。
+        /// TEX 条目总是读取——转换出的图片格式需加载纹理后才能确定（png/gif/mp4 等）。
+        /// 注：-i/-e 解析前过滤已在 FilterEntries 完成，无需在此重复判断。
+        /// </summary>
+        private static bool ShouldReadEntryBytes(PackageEntry entry)
+        {
+            if (entry.Type == EntryType.Tex && !_options.NoTexConvert)
+                return true;
+
+            // 仅输出转换图片(--only-tex-images)时 raw 不写，但上面已覆盖 Tex 条目
+            return ShouldOutputFile(entry.Extension);
+        }
+
         [SuppressMessage("ReSharper", "AssignNullToNotNullAttribute")]
         private static void ExtractEntry(PackageEntry entry, ref string outputDirectory, int currentPos, int totalEntries)
         {
             if (Program.Closing)
                 Environment.Exit(0);
 
-            // save raw (skip raw .tex write when only-tex-images mode)
+            // save raw (skip raw .tex write when only-tex-images mode, or when output filter rejects it)
             var filePathWithoutExtension = _options.SingleDir
                 ? Path.Combine(outputDirectory, entry.Name)
                 : Path.Combine(outputDirectory, entry.DirectoryPath, entry.Name);
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePathWithoutExtension));
 
-            bool skipRaw = _options.OnlyTexImages && entry.Type == EntryType.Tex;
-            if (!skipRaw)
+            // 输出层过滤：raw 文件按条目原始扩展名判断
+            bool skipRaw = (_options.OnlyTexImages && entry.Type == EntryType.Tex) ||
+                           !ShouldOutputFile(entry.Extension);
+            if (skipRaw)
+            {
+                if (!_options.OnlyTexImages || entry.Type != EntryType.Tex)
+                    Console.WriteLine($"* Skipping (filtered): {entry.FullPath}");
+            }
+            else
             {
                 var filePath = filePathWithoutExtension + entry.Extension;
 
@@ -388,9 +460,22 @@ namespace RePKG_Re.Command
 
             try
             {
+                // 输出层过滤：转换图片按转换后格式的扩展名判断（如 TEX→png 按 ".png"）
+                var convertedFormat = _texToImageConverter.GetConvertedFormat(tex);
+                if (!ShouldOutputFile(convertedFormat.GetFileExtension()))
+                {
+                    Console.WriteLine($"* Skipping converted image (filtered): {entry.FullPath}");
+                    return;
+                }
+
                 ConvertToImageAndSave(tex, filePathWithoutExtension, _options.Overwrite);
-                var jsonInfo = _texJsonInfoGenerator.GenerateInfo(tex);
-                File.WriteAllText($"{filePathWithoutExtension}.tex-json", jsonInfo);
+
+                // .tex-json 附带文件按 ".json" 参与过滤（仅输出图像时自动排除）
+                if (ShouldOutputFile("json"))
+                {
+                    var jsonInfo = _texJsonInfoGenerator.GenerateInfo(tex);
+                    File.WriteAllText($"{filePathWithoutExtension}.tex-json", jsonInfo);
+                }
             }
             catch (Exception e)
             {
@@ -485,6 +570,18 @@ namespace RePKG_Re.Command
 
         [Option('e', "onlyexts", HelpText = "Only extract files with specified extensions (delimited by comma \",\")")]
         public string OnlyExts { get; set; }
+
+        [Option('I', "output-ignoreexts", HelpText =
+            "Don't write files with specified extensions (delimited by comma \",\"). " +
+            "Output-level filter: entries are still parsed (TEX converted), skipped when writing. " +
+            "TEX converted images are judged by their converted extension.")]
+        public string OutputIgnoreExts { get; set; }
+
+        [Option('E', "output-onlyexts", HelpText =
+            "Only write files with specified extensions (delimited by comma \",\"). " +
+            "Output-level filter: entries are still parsed (TEX converted), skipped when writing. " +
+            "TEX converted images are judged by their converted extension.")]
+        public string OutputOnlyExts { get; set; }
 
         [Option('t', "tex", HelpText = "Convert all tex files into images from specified directory in input")]
         public bool TexDirectory { get; set; }

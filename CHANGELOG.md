@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.4.4
+
+- 升级 SixLabors.ImageSharp 2.1.9 → 2.1.13,修复已知高危/中危安全漏洞(GHSA-2cmq-823j-5qj8、GHSA-rxmq-m78w-7wmc),转换输出无变化
+
 ## v0.4.3
 
 - 新增 `.mpkg` 支持（Wallpaper Engine「导出到手机」的场景包）：与 `.pkg` 同一容器格式，仅魔数不同（`PKGM0016` vs `PKGV0018`），extract / info / 目录模式均可直接处理，包内 TEX 照常转换

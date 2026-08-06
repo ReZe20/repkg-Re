@@ -4,7 +4,7 @@
         <LangVersion>latest</LangVersion>
         <AssemblyName>RePKG_Re.Core</AssemblyName>
         <RootNamespace>RePKG_Re.Core</RootNamespace>
-        <Version>0.4.3</Version>
+        <Version>0.4.4</Version>
         <Authors>NotScuffed, ReZe20</Authors>
         <Copyright>Copyright © NotScuffed 2019-2025, ReZe20 2026</Copyright>
     </PropertyGroup>

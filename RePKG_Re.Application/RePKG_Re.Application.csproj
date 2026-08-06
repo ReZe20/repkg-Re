@@ -4,7 +4,7 @@
         <LangVersion>latest</LangVersion>
         <AssemblyName>RePKG_Re.Application</AssemblyName>
         <RootNamespace>RePKG_Re.Application</RootNamespace>
-        <Version>0.4.3</Version>
+        <Version>0.4.4</Version>
         <Authors>NotScuffed, ReZe20</Authors>
         <Copyright>Copyright © NotScuffed 2019-2025, ReZe20 2026</Copyright>
     </PropertyGroup>
@@ -16,6 +16,6 @@
     <ItemGroup>
         <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
         <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-        <PackageReference Include="SixLabors.ImageSharp" Version="2.1.9" />
+        <PackageReference Include="SixLabors.ImageSharp" Version="2.1.13" />
     </ItemGroup>
 </Project>

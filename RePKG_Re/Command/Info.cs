@@ -62,7 +62,7 @@ namespace RePKG_Re.Command
 
             foreach (var directory in directoryInfo.EnumerateDirectories())
             {
-                foreach (var file in directory.EnumerateFiles("*.pkg"))
+                foreach (var file in directory.EnumerateFiles("*.pkg").Concat(directory.EnumerateFiles("*.mpkg")))
                 {
                     InfoPkg(file, file.FullName.Substring(rootDirectoryLength));
                 }
@@ -73,9 +73,13 @@ namespace RePKG_Re.Command
         {
         }
 
+        private static bool IsPkgExtension(string extension) =>
+            extension.Equals(".pkg", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".mpkg", StringComparison.OrdinalIgnoreCase);
+
         private static void InfoFile(FileInfo file)
         {
-            if (file.Extension.Equals(".pkg", StringComparison.OrdinalIgnoreCase))
+            if (IsPkgExtension(file.Extension))
                 InfoPkg(file, Path.GetFullPath(file.Name));
             else if (file.Extension.Equals(".tex", StringComparison.OrdinalIgnoreCase))
                 InfoTex(file);

@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.4.3
+
+- 新增 `.mpkg` 支持（Wallpaper Engine「导出到手机」的场景包）：与 `.pkg` 同一容器格式，仅魔数不同（`PKGM0016` vs `PKGV0018`），extract / info / 目录模式均可直接处理，包内 TEX 照常转换
+
 ## v0.4.2
 
 - 新增 `-I` / `-E`(即 `--output-ignoreexts` / `--output-onlyexts`):输出层扩展名过滤——条目照常解析(TEX 照常转换),写文件时按"输出文件扩展名"判断跳过/保留,转换出的图片按转换后格式(如 .png)参与判断,.tex-json 按 .json 判断

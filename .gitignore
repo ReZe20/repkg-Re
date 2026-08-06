@@ -6,7 +6,5 @@ bin
 Publish
 *.csproj.user
 *.pubxml.user
-RePKG.Tests/Output/*
-RePKG.Tests/TestTextures/*
-RePKG.Tests/TestTexturesValidated/*
 .reasonix
+.hermes

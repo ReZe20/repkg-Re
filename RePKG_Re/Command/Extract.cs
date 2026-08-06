@@ -148,7 +148,8 @@ namespace RePKG_Re.Command
 
             if (_options.Recursive)
             {
-                foreach (var file in directoryInfo.EnumerateFiles("*.pkg", SearchOption.AllDirectories))
+                foreach (var file in directoryInfo.EnumerateFiles("*.pkg", SearchOption.AllDirectories)
+                    .Concat(directoryInfo.EnumerateFiles("*.mpkg", SearchOption.AllDirectories)))
                 {
                     if (file.Directory == null || file.Directory.FullName.Length < rootDirectoryLength)
                         ExtractPkg(file);
@@ -161,18 +162,22 @@ namespace RePKG_Re.Command
 
             foreach (var directory in directoryInfo.EnumerateDirectories())
             {
-                foreach (var file in directory.EnumerateFiles("*.pkg"))
+                foreach (var file in directory.EnumerateFiles("*.pkg").Concat(directory.EnumerateFiles("*.mpkg")))
                 {
                     ExtractPkg(file, true, directory.FullName.Substring(rootDirectoryLength));
                 }
             }
         }
 
+        private static bool IsPkgExtension(string extension) =>
+            extension.Equals(".pkg", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".mpkg", StringComparison.OrdinalIgnoreCase);
+
         private static void ExtractFile(FileInfo fileInfo)
         {
             Directory.CreateDirectory(_options.OutputDirectory);
 
-            if (fileInfo.Extension.Equals(".pkg", StringComparison.OrdinalIgnoreCase))
+            if (IsPkgExtension(fileInfo.Extension))
                 ExtractPkg(fileInfo);
             else if (fileInfo.Extension.Equals(".tex", StringComparison.OrdinalIgnoreCase))
             {

@@ -33,6 +33,12 @@ Feel free to report errors.
 -n, --usename         Use name from project.json as project subfolder name instead of id
 --no-tex-convert      Don't convert TEX files into images while extracting PKG
 --overwrite           Overwrite all existing files
+--filter-effect-images <percent>  Skip entries whose converted image is mostly transparent
+                      or black (effect images); value = threshold percent 1-100 (0 = off),
+                      e.g. 85 = skip when transparent OR black ratio >= 85%
+--onlypaths           Only extract entries under the given directory prefix(es), comma-delimited;
+                      subfolders included (e.g. materials or materials/masks); \ and / both accepted
+--ignorepaths         Don't extract entries under the given directory prefix(es), comma-delimited
 ```
 - info - Dumps PKG/TEX info
 ```

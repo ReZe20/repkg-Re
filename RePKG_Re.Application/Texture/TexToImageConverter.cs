@@ -12,7 +12,7 @@ namespace RePKG_Re.Application.Texture
 {
     public class TexToImageConverter
     {
-        public ImageResult ConvertToImage(ITex tex)
+        public ImageResult ConvertToImage(ITex tex, double effectThresholdPercent = 0)
         {
             if (tex == null) throw new ArgumentNullException(nameof(tex));
 
@@ -57,6 +57,17 @@ namespace RePKG_Re.Application.Texture
                         sourceMipmap.Height != tex.Header.ImageHeight)
                         image.Mutate(x => x.Crop(tex.Header.ImageWidth, tex.Header.ImageHeight));
 
+                    // 效果图分析:编码前直接采样内存位图,零额外解码
+                    double? transparentRatio = null;
+                    double? blackRatio = null;
+                    if (effectThresholdPercent > 0)
+                    {
+                        EffectImageDetector.IsEffectImage(image, effectThresholdPercent,
+                            out var trans, out var black);
+                        transparentRatio = trans;
+                        blackRatio = black;
+                    }
+
                     using (var memoryStream = new MemoryStream())
                     {
                         image.SaveAsPng(memoryStream);
@@ -64,7 +75,9 @@ namespace RePKG_Re.Application.Texture
                         return new ImageResult
                         {
                             Bytes = memoryStream.ToArray(),
-                            Format = MipmapFormat.ImagePNG
+                            Format = MipmapFormat.ImagePNG,
+                            TransparentRatio = transparentRatio,
+                            BlackRatio = blackRatio
                         };
                     }
                 }
@@ -182,5 +195,11 @@ namespace RePKG_Re.Application.Texture
     {
         public byte[] Bytes { get; set; }
         public MipmapFormat Format { get; set; }
+
+        /// <summary>效果图分析结果:透明像素占比(null = 未分析)</summary>
+        public double? TransparentRatio { get; set; }
+
+        /// <summary>效果图分析结果:黑色像素占比(null = 未分析)</summary>
+        public double? BlackRatio { get; set; }
     }
 }

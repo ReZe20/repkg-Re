@@ -24,6 +24,8 @@ namespace RePKG_Re.Command
         // --output-ignoreexts / --output-onlyexts 在写文件时按"输出文件扩展名"过滤
         private static string[] _outputSkipExtArray;
         private static string[] _outputOnlyExtArray;
+        private static string[] _onlyPathArray;
+        private static string[] _ignorePathArray;
         private static readonly string[] ProjectFiles = {"project.json"};
 
         private static readonly ITexReader _texReader;
@@ -43,6 +45,13 @@ namespace RePKG_Re.Command
         public static void Action(ExtractOptions options)
         {
             _options = options;
+
+            if (options.FilterEffectImages < 0 || options.FilterEffectImages > 100)
+            {
+                Console.Error.WriteLine(
+                    $"Invalid --filter-effect-images value: {options.FilterEffectImages} (expected 1-100, 0 = off)");
+                Environment.Exit(1);
+            }
 
             if (string.IsNullOrEmpty(options.OutputDirectory))
             {
@@ -68,6 +77,16 @@ namespace RePKG_Re.Command
                 _outputOnlyExtArray = NormalizeExtensions(_options.OutputOnlyExts.Split(','));
             else
                 _outputOnlyExtArray = null;
+
+            if (!string.IsNullOrEmpty(_options.OnlyPaths))
+                _onlyPathArray = NormalizePaths(_options.OnlyPaths.Split(','));
+            else
+                _onlyPathArray = null;
+
+            if (!string.IsNullOrEmpty(_options.IgnorePaths))
+                _ignorePathArray = NormalizePaths(_options.IgnorePaths.Split(','));
+            else
+                _ignorePathArray = null;
 
             var fileInfo = new FileInfo(options.Input);
             var directoryInfo = new DirectoryInfo(options.Input);
@@ -106,6 +125,46 @@ namespace RePKG_Re.Command
             return array;
         }
 
+        /// <summary>目录前缀参数归一:去空白、反斜杠转正斜杠、去尾部斜杠、忽略空段</summary>
+        private static string[] NormalizePaths(string[] array)
+        {
+            var list = new List<string>();
+            foreach (var item in array)
+            {
+                var p = item.Trim().Replace('\\', '/').TrimEnd('/');
+                if (p.Length == 0)
+                    continue;
+                list.Add(p);
+            }
+
+            return list.ToArray();
+        }
+
+        /// <summary>目录前缀匹配(含子文件夹):prefix=materials/masks 命中 materials/masks/foo.tex,
+        /// 不命中 materials/masks_extra/foo.tex;大小写不敏感。
+        /// maxDepth &gt; 0 时限制前缀后的路径段数(1 = 仅直接子文件,子文件夹排除)。</summary>
+        private static bool IsPathUnderPrefix(string path, string prefix, int maxDepth)
+        {
+            if (path.Length <= prefix.Length)
+                return string.Equals(path, prefix, StringComparison.OrdinalIgnoreCase) && maxDepth <= 0;
+
+            if (path[prefix.Length] != '/' ||
+                !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            if (maxDepth <= 0)
+                return true;
+
+            int segments = 1;
+            for (int i = prefix.Length + 1; i < path.Length; i++)
+            {
+                if (path[i] == '/')
+                    segments++;
+            }
+
+            return segments <= maxDepth;
+        }
+
         private static void ExtractTexDirectory(DirectoryInfo directoryInfo)
         {
             var flags = SearchOption.TopDirectoryOnly;
@@ -130,9 +189,11 @@ namespace RePKG_Re.Command
                     var filePath = Path.Combine(_options.OutputDirectory,
                         Path.GetFileNameWithoutExtension(fileInfo.Name));
 
-                    ConvertToImageAndSave(tex, filePath, _options.Overwrite);
-                    var jsonInfo = _texJsonInfoGenerator.GenerateInfo(tex);
-                    File.WriteAllText($"{filePath}.tex-json", jsonInfo);
+                    if (ConvertToImageAndSave(tex, filePath, _options.Overwrite))
+                    {
+                        var jsonInfo = _texJsonInfoGenerator.GenerateInfo(tex);
+                        File.WriteAllText($"{filePath}.tex-json", jsonInfo);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -191,9 +252,11 @@ namespace RePKG_Re.Command
                     var filePath = Path.Combine(_options.OutputDirectory,
                         Path.GetFileNameWithoutExtension(fileInfo.Name));
 
-                    ConvertToImageAndSave(tex, filePath, _options.Overwrite);
-                    var jsonInfo = _texJsonInfoGenerator.GenerateInfo(tex);
-                    File.WriteAllText($"{filePath}.tex-json", jsonInfo);
+                    if (ConvertToImageAndSave(tex, filePath, _options.Overwrite))
+                    {
+                        var jsonInfo = _texJsonInfoGenerator.GenerateInfo(tex);
+                        File.WriteAllText($"{filePath}.tex-json", jsonInfo);
+                    }
                 }
                 catch (Exception e)
                 {
@@ -363,6 +426,19 @@ namespace RePKG_Re.Command
                     _onlyExtArray.Any(s => entry.FullPath.EndsWith(s, StringComparison.OrdinalIgnoreCase)));
             }
 
+            // --onlypaths/--ignorepaths：解析前目录前缀过滤（含子文件夹）
+            if (!string.IsNullOrEmpty(_options.OnlyPaths))
+            {
+                filtered = filtered.Where(entry =>
+                    _onlyPathArray.Any(p => IsPathUnderPrefix(entry.FullPath, p, _options.PathsDepth)));
+            }
+
+            if (!string.IsNullOrEmpty(_options.IgnorePaths))
+            {
+                filtered = filtered.Where(entry =>
+                    !_ignorePathArray.Any(p => IsPathUnderPrefix(entry.FullPath, p, _options.PathsDepth)));
+            }
+
             // 按文件大小过滤（阶段3）
             if (_options.MaxEntrySize > 0)
             {
@@ -429,6 +505,31 @@ namespace RePKG_Re.Command
 
             Directory.CreateDirectory(Path.GetDirectoryName(filePathWithoutExtension));
 
+            // 效果图过滤:先转换+分析,命中则整条目跳过(raw/converted/json 都不写)。
+            // 转换结果缓存复用,避免二次转换。
+            ITex filterTex = null;
+            ImageResult precomputedImage = null;
+            if (_options.FilterEffectImages > 0 && entry.Type == EntryType.Tex && !_options.NoTexConvert)
+            {
+                filterTex = LoadTex(entry.Bytes, entry.FullPath);
+                if (filterTex != null)
+                {
+                    var filterFormat = _texToImageConverter.GetConvertedFormat(filterTex);
+                    if (ShouldOutputFile(filterFormat.GetFileExtension()))
+                    {
+                        double filterThreshold = _options.FilterEffectImages / 100.0;
+                        precomputedImage = _texToImageConverter.ConvertToImage(filterTex, filterThreshold);
+                        if ((precomputedImage.TransparentRatio ?? 0) >= filterThreshold ||
+                            (precomputedImage.BlackRatio ?? 0) >= filterThreshold)
+                        {
+                            Console.WriteLine(
+                                $"* Skipping effect image: {entry.FullPath} (transparent {precomputedImage.TransparentRatio * 100:F1}%, black {precomputedImage.BlackRatio * 100:F1}%)");
+                            return;
+                        }
+                    }
+                }
+            }
+
             // 输出层过滤：raw 文件按条目原始扩展名判断
             bool skipRaw = (_options.OnlyTexImages && entry.Type == EntryType.Tex) ||
                            !ShouldOutputFile(entry.Extension);
@@ -458,7 +559,7 @@ namespace RePKG_Re.Command
             // 输出 entry 级进度（阶段5）
             Console.WriteLine($"{{\"type\":\"entry\",\"pos\":{currentPos},\"total\":{totalEntries},\"action\":\"converting\",\"entry\":\"{entry.FullPath}\"}}");
 
-            var tex = LoadTex(entry.Bytes, entry.FullPath);
+            var tex = filterTex ?? LoadTex(entry.Bytes, entry.FullPath);
 
             if (tex == null)
                 return;
@@ -473,7 +574,7 @@ namespace RePKG_Re.Command
                     return;
                 }
 
-                ConvertToImageAndSave(tex, filePathWithoutExtension, _options.Overwrite);
+                ConvertToImageAndSave(tex, filePathWithoutExtension, _options.Overwrite, precomputedImage);
 
                 // .tex-json 附带文件按 ".json" 参与过滤（仅输出图像时自动排除）
                 if (ShouldOutputFile("json"))
@@ -549,17 +650,31 @@ namespace RePKG_Re.Command
             return null;
         }
         
-        private static void ConvertToImageAndSave(ITex tex, string path, bool overwrite)
+        private static bool ConvertToImageAndSave(ITex tex, string path, bool overwrite, ImageResult precomputed = null)
         {
             var format = _texToImageConverter.GetConvertedFormat(tex);
             var outputPath = $"{path}.{format.GetFileExtension()}";
 
             if (!overwrite && File.Exists(outputPath))
-                return;
-            
-            var resultImage = _texToImageConverter.ConvertToImage(tex);
+                return true;
+
+            var resultImage = precomputed ?? _texToImageConverter.ConvertToImage(tex, _options.FilterEffectImages / 100.0);
+
+            // 效果图过滤:分析结果非空时按阈值判定(命中则不写转换图)
+            if (resultImage.TransparentRatio != null)
+            {
+                double threshold = _options.FilterEffectImages / 100.0;
+                if ((resultImage.TransparentRatio ?? 0) >= threshold ||
+                    (resultImage.BlackRatio ?? 0) >= threshold)
+                {
+                    Console.WriteLine(
+                        $"* Skipping effect image: {path} (transparent {resultImage.TransparentRatio * 100:F1}%, black {resultImage.BlackRatio * 100:F1}%)");
+                    return false;
+                }
+            }
 
             File.WriteAllBytes(outputPath, resultImage.Bytes);
+            return true;
         }
     }
 
@@ -610,6 +725,26 @@ namespace RePKG_Re.Command
 
         [Option('p', "only-tex-images", HelpText = "Only output converted TEX images; skip saving raw .tex files")]
         public bool OnlyTexImages { get; set; }
+
+        [Option("filter-effect-images", HelpText =
+            "Skip entries whose converted image is mostly transparent or black (effect images). " +
+            "Value = threshold percent (1-100), e.g. 85 = skip when transparent OR black ratio >= 85%. 0 = off", Default = 0.0)]
+        public double FilterEffectImages { get; set; }
+
+        [Option("onlypaths", HelpText =
+            "Only extract entries under the specified directory prefix(es) (delimited by comma \",\", " +
+            "e.g. materials or materials/masks). Subfolders included; \\\\ and / both accepted")]
+        public string OnlyPaths { get; set; }
+
+        [Option("ignorepaths", HelpText =
+            "Don't extract entries under the specified directory prefix(es) (delimited by comma \",\", " +
+            "e.g. effects,sounds). Subfolders included; \\\\ and / both accepted")]
+        public string IgnorePaths { get; set; }
+
+        [Option("paths-depth", HelpText =
+            "Limit --onlypaths/--ignorepaths to N path segments after the prefix " +
+            "(1 = direct children only, subfolders excluded). 0 = unlimited (default)", Default = 0)]
+        public int PathsDepth { get; set; }
 
         [Option("overwrite", HelpText = "Overwrite all existing files")]
         public bool Overwrite { get; set; }

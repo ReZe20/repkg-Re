@@ -10,6 +10,7 @@ using CommandLine;
 using Newtonsoft.Json;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Package;
+using RePKG_Re.Core.Package.Enums;
 
 namespace RePKG_Re.Command
 {
@@ -78,16 +79,26 @@ namespace RePKG_Re.Command
             var queue = new BlockingCollection<BatchEntryItem>();
             var states = new Dictionary<string, WallpaperState>();
 
-            foreach (var wallpaper in _wallpapers)
-                EnqueueWallpaper(wallpaper, queue, states);
+            // 内存闸:预防 OOM(TEX 转换并发按可用内存自适应),worker 数仍是硬上限
+            var gate = new MemoryGate();
+            gate.Start();
+            try
+            {
+                foreach (var wallpaper in _wallpapers)
+                    EnqueueWallpaper(wallpaper, queue, states);
 
-            queue.CompleteAdding();
+                queue.CompleteAdding();
 
-            var workers = new Task[_threads];
-            for (int i = 0; i < workers.Length; i++)
-                workers[i] = Task.Run(() => WorkerLoop(queue, states));
+                var workers = new Task[_threads];
+                for (int i = 0; i < workers.Length; i++)
+                    workers[i] = Task.Run(() => WorkerLoop(queue, states, gate));
 
-            Task.WaitAll(workers);
+                Task.WaitAll(workers);
+            }
+            finally
+            {
+                gate.Stop();
+            }
         }
 
         /// <summary>解析壁纸目录 → 条目元数据入全局队列;解析失败/无条目 → error + done,继续其余壁纸。</summary>
@@ -161,7 +172,8 @@ namespace RePKG_Re.Command
                 $"{{\"id\":{J(wallpaper.Id)},\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{total}}}");
         }
 
-        private void WorkerLoop(BlockingCollection<BatchEntryItem> queue, Dictionary<string, WallpaperState> states)
+        private void WorkerLoop(BlockingCollection<BatchEntryItem> queue, Dictionary<string, WallpaperState> states,
+            MemoryGate gate)
         {
             foreach (var item in queue.GetConsumingEnumerable())
             {
@@ -178,27 +190,64 @@ namespace RePKG_Re.Command
                     continue;
                 }
 
+                // 内存闸:仅 TEX 转换条目(ImageSharp 位图是内存大头);raw 拷贝有 worker 数天然上界
+                bool isTexConvert = item.Entry.Type == EntryType.Tex && !_ctx.Options.NoTexConvert;
+                if (!isTexConvert)
+                {
+                    ProcessItem(item, state, pos);
+                    TryFinish(item.WallpaperId, state);
+                    continue;
+                }
+
+                long estimate = MemoryEstimate(item.Entry.Length);
+                bool reserved = gate.TryAcquire(estimate);
                 try
                 {
-                    using (var stream = item.Pkg.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
-                    {
-                        var bytes = PackageReader.ReadEntryBytesFromStream(stream, item.DataStart, item.Entry.Offset,
-                            item.Entry.Length);
-                        item.Entry.Bytes = bytes;
-
-                        var outputDir = item.OutputDir;
-                        _ctx.ExtractEntry(item.Entry, ref outputDir, pos, state.Total, item.WallpaperId);
-
-                        item.Entry.Bytes = null; // free memory after processing
-                    }
+                    ProcessItem(item, state, pos);
                 }
-                catch (Exception e)
+                finally
                 {
-                    EmitError(item.WallpaperId, item.Entry.FullPath, e.Message);
+                    if (reserved)
+                        gate.Release(estimate);
                 }
 
                 TryFinish(item.WallpaperId, state);
             }
+        }
+
+        private void ProcessItem(BatchEntryItem item, WallpaperState state, int pos)
+        {
+            try
+            {
+                using (var stream = item.Pkg.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    var bytes = PackageReader.ReadEntryBytesFromStream(stream, item.DataStart, item.Entry.Offset,
+                        item.Entry.Length);
+                    item.Entry.Bytes = bytes;
+
+                    var outputDir = item.OutputDir;
+                    _ctx.ExtractEntry(item.Entry, ref outputDir, pos, state.Total, item.WallpaperId);
+
+                    item.Entry.Bytes = null; // free memory after processing
+                }
+            }
+            catch (Exception e)
+            {
+                EmitError(item.WallpaperId, item.Entry.FullPath, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// TEX 转换内存预估:解压位图 + ImageSharp 解码/克隆/编码缓冲(4K 实测 ~150-200MB)。
+        /// 按压缩字节数放大估算(压缩率未知),保守偏大;上下限夹取。
+        /// </summary>
+        private static long MemoryEstimate(long entryLength)
+        {
+            const long minEstimate = 8L * 1024 * 1024;
+            const long maxEstimate = 384L * 1024 * 1024;
+            if (entryLength <= 0)
+                return 32L * 1024 * 1024;
+            return Math.Min(Math.Max(entryLength * 64, minEstimate), maxEstimate);
         }
 
         private void TryFinish(string wallpaperId, WallpaperState state)

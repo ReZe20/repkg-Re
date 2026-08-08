@@ -309,5 +309,26 @@ namespace RePKG_Re.Tests
             var start = events.First(e => e.type == "wallpaper");
             Assert.That((int)start.total_entries, Is.EqualTo(3));
         }
+
+        [Test]
+        public void MemoryGate_Acquire_Release_And_Bypass()
+        {
+            // 小预订:系统可用内存充足,必然通过(Start 内同步首采样,availPhys 立即可用)
+            var gate = new MemoryGate(safetyRatio: 0.7, pollIntervalMs: 100, maxRetries: 5, retryDelayMs: 1);
+            gate.Start();
+            try
+            {
+                Assert.That(gate.TryAcquire(1024 * 1024), Is.True);
+                gate.Release(1024 * 1024);
+
+                // 超大预订(10TB):超过任何真实预算,重试耗尽后放行(返回 false,不预订)
+                // 放行语义 = 退化无闸行为,保证不因闸而死锁
+                Assert.That(gate.TryAcquire(10L * 1024 * 1024 * 1024 * 1024), Is.False);
+            }
+            finally
+            {
+                gate.Stop();
+            }
+        }
     }
 }

@@ -25,7 +25,6 @@ Feel free to report errors.
 -o, --output          (Default: ./output) Output directory
 -i, --ignoreexts      Don't extract files with specified extensions (delimited by comma ",")
 -e, --onlyexts        Only extract files with specified extensions (delimited by comma ",")
--d, --debuginfo       Print debug info while extracting/decompiling
 -t, --tex             Convert all TEX files into images from specified directory in input
 -s, --singledir       Should all extracted files be put in one directory instead of their entry path
 -r, --recursive       Recursive search in all subfolders of specified directory
@@ -33,13 +32,37 @@ Feel free to report errors.
 -n, --usename         Use name from project.json as project subfolder name instead of id
 --no-tex-convert      Don't convert TEX files into images while extracting PKG
 --overwrite           Overwrite all existing files
+--lazy                Read entry bytes one at a time instead of loading the whole package
+--min-entry-size <KB> Skip entries smaller than this, in KB
+--max-entry-size <KB> Skip entries larger than this, in KB
 --filter-effect-images <percent>  Skip entries whose converted image is mostly transparent
                       or black (effect images); value = threshold percent 1-100 (0 = off),
                       e.g. 85 = skip when transparent OR black ratio >= 85%
 --onlypaths           Only extract entries under the given directory prefix(es), comma-delimited;
                       subfolders included (e.g. materials or materials/masks); \ and / both accepted
 --ignorepaths         Don't extract entries under the given directory prefix(es), comma-delimited
+--paths-depth <N>     Limit directory filtering depth (1 = direct files only, 0 = unlimited, default)
+-p, --only-tex-images Only save the image a TEX converts into, skip raw .tex and .tex-json
+-I, --output-ignoreexts  Don't write output files with these extensions (converted images are
+                      judged by their converted format, e.g. .png; raw files by their own extension)
+-E, --output-onlyexts    Only write output files with these extensions (same judgement as -I)
 ```
+- batch - Extracts multiple wallpapers from a manifest file in one process
+```
+repkg batch --manifest manifest.json [--threads 8]
+```
+Manifest format (0 = physical core count for threads; options match extract):
+```
+{
+  "threads": 0,
+  "wallpapers": [
+    { "id": "0", "input": "C:/path/to/wallpaper_dir", "output": "C:/path/to/out/wallpaper_0" }
+  ],
+  "options": { "overwrite": true, "onlypaths": ["materials"], "filterEffectImages": 85 }
+}
+```
+Progress is reported as one JSON object per line on stdout (wallpaper start/done, entry, error,
+batch done); the batch continues on errors and always exits 0 unless the manifest is invalid.
 - info - Dumps PKG/TEX info
 ```
 -s, --sort             Sort entries a-z

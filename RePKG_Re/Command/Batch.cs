@@ -43,7 +43,7 @@ namespace RePKG_Re.Command
 
             int threads = options.Threads > 0 ? options.Threads
                 : manifest.Threads > 0 ? manifest.Threads
-                : Environment.ProcessorCount;
+                : ProcessorInfo.GetPhysicalProcessorCount(); // 物理核数:超线程无吞吐收益,只翻倍内存
 
             var ctx = new ExtractContext(manifest.ToExtractOptions());
             var runner = new BatchRunner(ctx, manifest.Wallpapers, threads);

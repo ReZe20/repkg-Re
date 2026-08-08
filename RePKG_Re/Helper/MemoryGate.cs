@@ -34,6 +34,13 @@ namespace RePKG_Re
         private const int DefaultMaxRetries = 100; // 100 × 20ms = 2s 仍无余量则放行
         private const int DefaultRetryDelayMs = 20;
 
+        /// <summary>
+        /// 闸预算固定封顶 4GB:转换缓冲在途上限(4K 转换实测 ~250-400MB/张,≈10-13 张并发)。
+        /// 只依赖"可用内存 × 比例"在大内存机器上永远不设防(32GB 机器预算 22GB),
+        /// 会导致 16+ 线程并发转换把进程内存顶到 10GB 级。
+        /// </summary>
+        private const long MaxGateBudget = 4L * 1024 * 1024 * 1024;
+
         private readonly double _safetyRatio;
         private readonly int _pollIntervalMs;
         private readonly int _maxRetries;
@@ -91,7 +98,7 @@ namespace RePKG_Re
         {
             for (int i = 0; i < _maxRetries; i++)
             {
-                long budget = (long)(Volatile.Read(ref _availPhys) * _safetyRatio);
+                long budget = Math.Min((long)(Volatile.Read(ref _availPhys) * _safetyRatio), MaxGateBudget);
                 if (Interlocked.Add(ref _inFlightBytes, estimatedBytes) <= budget)
                     return true;
                 Interlocked.Add(ref _inFlightBytes, -estimatedBytes);

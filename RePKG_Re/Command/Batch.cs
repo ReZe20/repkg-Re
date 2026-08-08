@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using CommandLine;
 using Newtonsoft.Json;
 using RePKG_Re.Application.Package;
@@ -33,35 +36,63 @@ namespace RePKG_Re.Command
             Console.OutputEncoding = Encoding.UTF8;
 
             var manifest = BatchManifest.Load(options.Manifest);
+
+            int threads = options.Threads > 0 ? options.Threads
+                : manifest.Threads > 0 ? manifest.Threads
+                : Environment.ProcessorCount;
+
             var ctx = new ExtractContext(manifest.ToExtractOptions());
-            var runner = new BatchRunner(ctx, manifest.Wallpapers);
+            var runner = new BatchRunner(ctx, manifest.Wallpapers, threads);
             runner.Run();
             Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
         }
     }
 
     /// <summary>
-    /// 串行批处理执行器(Phase 0)。Phase 1 将替换为全局条目队列 + 多线程消费。
-    /// 事件协议:id/type/action/entry/pos/total 每行一个 JSON。
+    /// 批处理执行器:全局条目队列 + N 个 worker 线程消费。
+    /// 队列非空线程不闲 → 天然吃满 --threads。内存有界由 worker 数保证(同时处理的条目 ≤ worker 数,
+    /// 在途字节 ≤ worker 数 × 单条目);队列仅存元数据(~100B/条),无界可接受。
+    /// 事件协议:id/type/action/entry/pos/total 每行一个 JSON;worker 各自开流 seek 读字节。
     /// </summary>
     public class BatchRunner
     {
         private readonly ExtractContext _ctx;
         private readonly List<BatchWallpaper> _wallpapers;
+        private readonly int _threads;
 
-        public BatchRunner(ExtractContext ctx, List<BatchWallpaper> wallpapers)
+        public BatchRunner(ExtractContext ctx, List<BatchWallpaper> wallpapers, int threads)
         {
             _ctx = ctx;
             _wallpapers = wallpapers;
+            _threads = Math.Max(1, threads);
         }
 
         public void Run()
         {
+            // 线程池预热:net472 线程池默认缓慢爬升,直接拉到目标线程数,
+            // 否则开头几秒实际并发达不到 --threads
+            ThreadPool.SetMinThreads(_threads, _threads);
+
+            // 无界队列:条目只含元数据(路径/偏移/长度,~100B),内存可控;
+            // 全部入队后再启动 worker,避免有界队列在 worker 启动前被灌满而阻塞
+            var queue = new BlockingCollection<BatchEntryItem>();
+            var states = new Dictionary<string, WallpaperState>();
+
             foreach (var wallpaper in _wallpapers)
-                ExtractWallpaper(wallpaper);
+                EnqueueWallpaper(wallpaper, queue, states);
+
+            queue.CompleteAdding();
+
+            var workers = new Task[_threads];
+            for (int i = 0; i < workers.Length; i++)
+                workers[i] = Task.Run(() => WorkerLoop(queue, states));
+
+            Task.WaitAll(workers);
         }
 
-        private void ExtractWallpaper(BatchWallpaper wallpaper)
+        /// <summary>解析壁纸目录 → 条目元数据入全局队列;解析失败/无条目 → error + done,继续其余壁纸。</summary>
+        private void EnqueueWallpaper(BatchWallpaper wallpaper, BlockingCollection<BatchEntryItem> queue,
+            Dictionary<string, WallpaperState> states)
         {
             var dir = new DirectoryInfo(wallpaper.Input);
             if (!dir.Exists)
@@ -92,10 +123,8 @@ namespace RePKG_Re.Command
                 return;
             }
 
-            // 先解析全部 pkg 条目表(仅元数据,内存有界),统计该壁纸总条目数;
-            // 单个 pkg 头解析失败 → error 事件 + 跳过该 pkg,继续其余
-            var plans = new List<PkgPlan>();
-            int totalEntries = 0;
+            var state = new WallpaperState();
+            int total = 0;
             foreach (var pkg in pkgFiles)
             {
                 try
@@ -104,9 +133,11 @@ namespace RePKG_Re.Command
                     using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
                     {
                         var entries = ExtractContext.ParsePkgEntriesTable(stream, reader, out int dataStart);
-                        var filtered = _ctx.FilterEntries(entries).ToList();
-                        plans.Add(new PkgPlan(pkg, filtered, dataStart));
-                        totalEntries += filtered.Count;
+                        foreach (var entry in _ctx.FilterEntries(entries))
+                        {
+                            queue.Add(new BatchEntryItem(wallpaper.Id, wallpaper.Output, pkg, dataStart, entry));
+                            total++;
+                        }
                     }
                 }
                 catch (Exception e)
@@ -115,7 +146,7 @@ namespace RePKG_Re.Command
                 }
             }
 
-            if (totalEntries == 0)
+            if (total == 0)
             {
                 EmitError(wallpaper.Id, wallpaper.Input, "No extractable entries found");
                 EmitWallpaperDone(wallpaper.Id);
@@ -123,46 +154,58 @@ namespace RePKG_Re.Command
             }
 
             Directory.CreateDirectory(wallpaper.Output);
+            state.Total = total;
+            states[wallpaper.Id] = state;
 
             Console.WriteLine(
-                $"{{\"id\":{J(wallpaper.Id)},\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{totalEntries}}}");
+                $"{{\"id\":{J(wallpaper.Id)},\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{total}}}");
+        }
 
-            int pos = 0;
-            string outputDir = wallpaper.Output;
-            foreach (var plan in plans)
+        private void WorkerLoop(BlockingCollection<BatchEntryItem> queue, Dictionary<string, WallpaperState> states)
+        {
+            foreach (var item in queue.GetConsumingEnumerable())
             {
-                using (var stream = plan.Pkg.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
-                using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+                var state = states[item.WallpaperId];
+                int pos = Interlocked.Increment(ref state.Started);
+
+                // 每条目统一发 entry 事件(处理前发出,pos 单调递增,进度不依赖 TEX 转换事件)
+                Console.WriteLine(
+                    $"{{\"id\":{J(item.WallpaperId)},\"type\":\"entry\",\"entry\":{J(item.Entry.FullPath)},\"pos\":{pos},\"total\":{state.Total}}}");
+
+                if (!_ctx.ShouldReadEntryBytes(item.Entry))
                 {
-                    foreach (var entry in plan.Entries)
+                    TryFinish(item.WallpaperId, state);
+                    continue;
+                }
+
+                try
+                {
+                    using (var stream = item.Pkg.Open(FileMode.Open, FileAccess.Read, FileShare.Read))
                     {
-                        // 每条目统一发 entry 事件(处理前发出,pos 单调递增),进度不依赖 TEX 转换事件
-                        pos++;
-                        Console.WriteLine(
-                            $"{{\"id\":{J(wallpaper.Id)},\"type\":\"entry\",\"entry\":{J(entry.FullPath)},\"pos\":{pos},\"total\":{totalEntries}}}");
+                        var bytes = PackageReader.ReadEntryBytesFromStream(stream, item.DataStart, item.Entry.Offset,
+                            item.Entry.Length);
+                        item.Entry.Bytes = bytes;
 
-                        if (!_ctx.ShouldReadEntryBytes(entry))
-                            continue;
+                        var outputDir = item.OutputDir;
+                        _ctx.ExtractEntry(item.Entry, ref outputDir, pos, state.Total, item.WallpaperId);
 
-                        try
-                        {
-                            var bytes = PackageReader.ReadEntryBytesFromStream(stream, plan.DataStart, entry.Offset,
-                                entry.Length);
-                            entry.Bytes = bytes;
-
-                            _ctx.ExtractEntry(entry, ref outputDir, pos, totalEntries, wallpaper.Id);
-
-                            entry.Bytes = null; // free memory after processing
-                        }
-                        catch (Exception e)
-                        {
-                            EmitError(wallpaper.Id, entry.FullPath, e.Message);
-                        }
+                        item.Entry.Bytes = null; // free memory after processing
                     }
                 }
-            }
+                catch (Exception e)
+                {
+                    EmitError(item.WallpaperId, item.Entry.FullPath, e.Message);
+                }
 
-            EmitWallpaperDone(wallpaper.Id);
+                TryFinish(item.WallpaperId, state);
+            }
+        }
+
+        private void TryFinish(string wallpaperId, WallpaperState state)
+        {
+            // 最后一个处理完该壁纸条目的 worker 发出 done 事件(Interlocked 保证恰好一次)
+            if (Interlocked.Increment(ref state.Done) == state.Total)
+                EmitWallpaperDone(wallpaperId);
         }
 
         private static string J(string s) => JsonConvert.SerializeObject(s);
@@ -172,19 +215,32 @@ namespace RePKG_Re.Command
 
         private static void EmitWallpaperDone(string id)
             => Console.WriteLine($"{{\"id\":{J(id)},\"type\":\"wallpaper\",\"action\":\"done\"}}");
+    }
 
-        private sealed class PkgPlan
+    /// <summary>队列条目:条目元数据 + 所属壁纸与 pkg 定位信息(不含字节,内存有界)。</summary>
+    internal sealed class BatchEntryItem
+    {
+        public string WallpaperId { get; }
+        public string OutputDir { get; }
+        public FileInfo Pkg { get; }
+        public int DataStart { get; }
+        public PackageEntry Entry { get; }
+
+        public BatchEntryItem(string wallpaperId, string outputDir, FileInfo pkg, int dataStart, PackageEntry entry)
         {
-            public FileInfo Pkg { get; }
-            public List<PackageEntry> Entries { get; }
-            public int DataStart { get; }
-
-            public PkgPlan(FileInfo pkg, List<PackageEntry> entries, int dataStart)
-            {
-                Pkg = pkg;
-                Entries = entries;
-                DataStart = dataStart;
-            }
+            WallpaperId = wallpaperId;
+            OutputDir = outputDir;
+            Pkg = pkg;
+            DataStart = dataStart;
+            Entry = entry;
         }
+    }
+
+    /// <summary>每壁纸进度状态(Interlocked 字段,worker 并发更新)。</summary>
+    internal sealed class WallpaperState
+    {
+        public int Total;
+        public int Started;
+        public int Done;
     }
 }

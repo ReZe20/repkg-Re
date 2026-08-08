@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Runtime;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -254,8 +257,50 @@ namespace RePKG_Re.Command
         {
             // 最后一个处理完该壁纸条目的 worker 发出 done 事件(Interlocked 保证恰好一次)
             if (Interlocked.Increment(ref state.Done) == state.Total)
+            {
                 EmitWallpaperDone(wallpaperId);
+                MaybeTrimMemory();
+            }
         }
+
+        // ---------- 内存整理 ----------
+        // net472 的 GC 高水位设计:对象回收后托管堆(尤其 LOH)不归还给 OS,
+        // 批量处理大纹理时任务管理器内存曲线持续爬升。在壁纸边界主动整理:
+        // 压缩 LOH + 强制回收 + 修剪工作集,让内存回落。
+        // 触发:每个壁纸完成时尝试,距上次整理至少 5 秒(小壁纸批量由时间节流兜底)。
+
+        private const int TrimMinIntervalMs = 5000;
+
+        private int _lastTrimTicks; // Environment.TickCount(int,32 位;批处理时长内无回绕问题)
+
+        private void MaybeTrimMemory()
+        {
+            if (Environment.TickCount - Volatile.Read(ref _lastTrimTicks) < TrimMinIntervalMs) return;
+            Volatile.Write(ref _lastTrimTicks, Environment.TickCount);
+            TrimMemory();
+        }
+
+        private static void TrimMemory()
+        {
+            try
+            {
+                // 压缩 LOH 一次 + 两轮回收(第二轮清掉第一轮 WaitForPendingFinalizers 产生的可回收对象)
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect(2, GCCollectionMode.Optimized, blocking: true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(2, GCCollectionMode.Optimized, blocking: true);
+
+                // 修剪物理工作集,把内存页归还给系统(下次用到再缺页读回,壁纸边界低频触发,影响可忽略)
+                SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(-1), (IntPtr)(-1));
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"* Memory trim failed: {e.Message}");
+            }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
 
         private static string J(string s) => JsonConvert.SerializeObject(s);
 

@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using CommandLine;
 using RePKG_Re.Command;
 
@@ -10,6 +11,9 @@ namespace RePKG_Re
 
         private static void Main(string[] args)
         {
+            // 统一 UTF-8 输出:前端进程(.NET 8)按 UTF-8 解码重定向流,
+            // 不设会按系统 ANSI 代码页(GBK)输出,中文文件名到前端变乱码(恶魔→榄旂帇)
+            Console.OutputEncoding = Encoding.UTF8;
             Console.CancelKeyPress += Cancel;
 
             if (args.Length > 0 && args[0] == "interactive")

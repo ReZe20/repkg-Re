@@ -104,24 +104,35 @@ namespace RePKG_Re.Command
             }
         }
 
-        /// <summary>解析壁纸目录 → 条目元数据入全局队列;解析失败/无条目 → error + done,继续其余壁纸。</summary>
+        /// <summary>解析壁纸输入 → 条目元数据入全局队列;input 兼容文件与目录:
+        /// 单个 .pkg/.mpkg 文件 → 只拆该文件;目录 → 递归枚举目录内所有 pkg/mpkg;
+        /// 解析失败/无条目 → error + done,继续其余壁纸。</summary>
         private void EnqueueWallpaper(BatchWallpaper wallpaper, BlockingCollection<BatchEntryItem> queue,
             Dictionary<string, WallpaperState> states)
         {
-            var dir = new DirectoryInfo(wallpaper.Input);
-            if (!dir.Exists)
-            {
-                EmitError(wallpaper.Id, wallpaper.Input, "Input directory not found");
-                EmitWallpaperDone(wallpaper.Id);
-                return;
-            }
-
             FileInfo[] pkgFiles;
             try
             {
-                pkgFiles = dir.EnumerateFiles("*.pkg", SearchOption.AllDirectories)
-                    .Concat(dir.EnumerateFiles("*.mpkg", SearchOption.AllDirectories))
-                    .ToArray();
+                bool isPkgFile = File.Exists(wallpaper.Input) &&
+                    (wallpaper.Input.EndsWith(".pkg", StringComparison.OrdinalIgnoreCase) ||
+                     wallpaper.Input.EndsWith(".mpkg", StringComparison.OrdinalIgnoreCase));
+                if (isPkgFile)
+                {
+                    pkgFiles = new[] { new FileInfo(wallpaper.Input) };
+                }
+                else
+                {
+                    var dir = new DirectoryInfo(wallpaper.Input);
+                    if (!dir.Exists)
+                    {
+                        EmitError(wallpaper.Id, wallpaper.Input, "Input path not found");
+                        EmitWallpaperDone(wallpaper.Id);
+                        return;
+                    }
+                    pkgFiles = dir.EnumerateFiles("*.pkg", SearchOption.AllDirectories)
+                        .Concat(dir.EnumerateFiles("*.mpkg", SearchOption.AllDirectories))
+                        .ToArray();
+                }
             }
             catch (Exception e)
             {

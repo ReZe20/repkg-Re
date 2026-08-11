@@ -97,7 +97,13 @@ namespace RePKG_Re.Command
     public class BatchWallpaper
     {
         public string Id { get; set; }
+
+        /// <summary>
+        /// 输入路径,兼容文件与目录:单个 .pkg/.mpkg 文件 → 只拆该文件;
+        /// 目录 → 递归枚举目录内所有 pkg/mpkg 一并拆出。
+        /// </summary>
         public string Input { get; set; }
+
         public string Output { get; set; }
     }
 

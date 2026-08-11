@@ -1,5 +1,9 @@
 # 更新日志
 
+## v0.5.1
+
+- batch manifest 的 `wallpapers[].input` 兼容**文件与目录**:指向单个 .pkg/.mpkg 文件 → 只拆该文件;指向目录 → 递归枚举目录内所有 pkg/mpkg(原行为不变)。调用方(WE Tool 导入页)可直接传源文件路径,免去"先拷贝 pkg 到输出目录"的暂存步骤
+
 ## v0.5.0
 
 - 新增 `batch` 命令:单进程多线程批量提取(`batch --manifest <json> [--threads N]`)——manifest 文件传路径,消灭命令行引号转义;所有壁纸的条目进入全局队列,N 个 worker 线程并行处理(队列仅存元数据 ~100B/条);stdout 每行一个 JSON 事件(`wallpaper start/done`、`entry`、`error`、`batch done`),调用方按 id 路由进度;进程崩溃由调用方检测重启,一次批量只开一个进程

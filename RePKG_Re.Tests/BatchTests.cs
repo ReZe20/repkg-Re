@@ -213,6 +213,57 @@ namespace RePKG_Re.Tests
         }
 
         [Test]
+        public void Batch_Extracts_FileInput_SinglePkg()
+        {
+            // input 直接指向单个 .pkg 文件(文件兼容模式):只拆该文件,不做目录枚举
+            var pkgPath = Path.Combine(_tempDir, "single.pkg");
+            WritePkg(pkgPath,
+                ("txt/foo.txt", Encoding.ASCII.GetBytes("hello")),
+                ("tex/scene.tex", RgbaTexBytes()));
+
+            var outDir = Path.Combine(_tempDir, "out");
+            var manifestPath = WriteManifest("m.json",
+                new List<(string, string, string)> { ("0", pkgPath, outDir) }, threads: 4);
+
+            var events = RunBatchAndCapture(manifestPath);
+
+            Assert.That(events.Any(e => e.type == "batch" && e.action == "done"), Is.True);
+            Assert.That(events.Any(e => e.type == "error"), Is.False);
+            Assert.That(ListFiles(outDir),
+                Is.EquivalentTo(new[] { "tex/scene.png", "tex/scene.tex", "tex/scene.tex-json", "txt/foo.txt" }));
+        }
+
+        [Test]
+        public void Batch_Mixed_FileAndDirInput()
+        {
+            // 文件与目录混合:文件条目只拆自身;目录条目枚举目录内所有 pkg
+            var pkgFile = Path.Combine(_tempDir, "one.pkg");
+            WritePkg(pkgFile, ("txt/a.txt", Encoding.ASCII.GetBytes("aaa")));
+
+            var dir = Path.Combine(_tempDir, "wpd");
+            Directory.CreateDirectory(dir);
+            WritePkg(Path.Combine(dir, "two.pkg"), ("txt/b.txt", Encoding.ASCII.GetBytes("bbb")));
+
+            var out1 = Path.Combine(_tempDir, "out1");
+            var out2 = Path.Combine(_tempDir, "out2");
+            var manifestPath = WriteManifest("m.json",
+                new List<(string, string, string)>
+                {
+                    ("F", pkgFile, out1),
+                    ("D", dir, out2)
+                }, threads: 4);
+
+            var events = RunBatchAndCapture(manifestPath);
+
+            var dones = events.Where(e => e.type == "wallpaper" && e.action == "done")
+                .Select(e => (string)e.id).ToList();
+            Assert.That(dones, Is.EquivalentTo(new[] { "F", "D" }));
+            Assert.That(events.Any(e => e.type == "error"), Is.False);
+            Assert.That(ListFiles(out1), Is.EquivalentTo(new[] { "txt/a.txt" }));
+            Assert.That(ListFiles(out2), Is.EquivalentTo(new[] { "txt/b.txt" }));
+        }
+
+        [Test]
         public void Batch_Threads1_And_Threads8_Produce_Identical_Output()
         {
             var wp = Path.Combine(_tempDir, "wp");

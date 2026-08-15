@@ -1,6 +1,13 @@
 # 更新日志
 
+## v0.5.2
+
+- 新增 TEX → GIF 输出:`GifWriter` 逐帧量化(ImageSharp 调色板 + 索引)+ 按帧序写出,透明信息保留;大图/GIF 成品字节流式落盘(不再整份驻留内存)
+- 效果图过滤预检缓存:已编码字节仍在内存时直接复用落盘,避免重复编码
+- 新增 GIF 相关单元测试(GifWriterTests/GifExtensionTests)
+
 ## v0.5.1
+
 
 - batch manifest 的 `wallpapers[].input` 兼容**文件与目录**:指向单个 .pkg/.mpkg 文件 → 只拆该文件;指向目录 → 递归枚举目录内所有 pkg/mpkg(原行为不变)。调用方(WE Tool 导入页)可直接传源文件路径,免去"先拷贝 pkg 到输出目录"的暂存步骤
 

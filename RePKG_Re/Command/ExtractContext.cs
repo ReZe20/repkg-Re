@@ -694,23 +694,59 @@ namespace RePKG_Re.Command
             if (!overwrite && File.Exists(outputPath))
                 return true;
 
-            var resultImage = precomputed ?? _texToImageConverter.ConvertToImage(tex, Options.FilterEffectImages / 100.0);
-
-            // 效果图过滤:分析结果非空时按阈值判定(命中则不写转换图)
-            if (resultImage.TransparentRatio != null)
+            // 预检缓存(效果图过滤已编码):字节已在内存,直接落盘
+            if (precomputed != null)
             {
-                double threshold = Options.FilterEffectImages / 100.0;
-                if ((resultImage.TransparentRatio ?? 0) >= threshold ||
-                    (resultImage.BlackRatio ?? 0) >= threshold)
-                {
-                    Console.WriteLine(
-                        $"* Skipping effect image: {path} (transparent {resultImage.TransparentRatio * 100:F1}%, black {resultImage.BlackRatio * 100:F1}%)");
+                if (IsEffectHit(precomputed, path))
                     return false;
-                }
+
+                File.WriteAllBytes(outputPath, precomputed.Bytes);
+                return true;
             }
 
-            File.WriteAllBytes(outputPath, resultImage.Bytes);
+            // 流式编码:编码器直接把成品写入文件流,大图/GIF 的成品字节不再整份驻留内存
+            try
+            {
+                using (var fileStream = File.Create(outputPath))
+                {
+                    var resultImage =
+                        _texToImageConverter.ConvertToImage(tex, fileStream, Options.FilterEffectImages / 100.0);
+
+                    if (IsEffectHit(resultImage, path))
+                    {
+                        fileStream.Dispose();
+                        File.Delete(outputPath);
+                        return false;
+                    }
+                }
+            }
+            catch
+            {
+                // 编码失败时清掉半成品文件(内存版路径不会留下文件)
+                try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { }
+                throw;
+            }
+
             return true;
+        }
+
+        /// <summary>效果图过滤判定:命中返回 true 并打印跳过原因(仅分析过的结果参与判定)。</summary>
+        private bool IsEffectHit(ImageResult resultImage, string path)
+        {
+            if (resultImage.TransparentRatio == null)
+                return false;
+
+            double threshold = Options.FilterEffectImages / 100.0;
+
+            if ((resultImage.TransparentRatio ?? 0) >= threshold ||
+                (resultImage.BlackRatio ?? 0) >= threshold)
+            {
+                Console.WriteLine(
+                    $"* Skipping effect image: {path} (transparent {resultImage.TransparentRatio * 100:F1}%, black {resultImage.BlackRatio * 100:F1}%)");
+                return true;
+            }
+
+            return false;
         }
     }
 }

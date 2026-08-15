@@ -51,6 +51,12 @@ namespace RePKG_Re.Application.Texture
             return image;
         }
 
+        /// <summary>解压单个 mipmap(供容器层批量并行解压使用)。</summary>
+        public void DecompressMipmap(ITexMipmap mipmap)
+        {
+            _texMipmapDecompressor.DecompressMipmap(mipmap);
+        }
+
         private TexMipmap ReadMipmapV1(BinaryReader reader)
         {
             return new TexMipmap

@@ -54,6 +54,11 @@ namespace RePKG_Re.Application.Texture
                     throw new InvalidOperationException("Expected mp4 magic header");
                 }
 
+                // 流式模式必须把 mp4 字节写入 outputStream(与下方非 raw 分支同坑:
+                // 2026-08-23 实测视频纹理 TEX 转出 mp4 空文件)
+                if (outputStream != null && sourceMipmap.Bytes != null)
+                    outputStream.Write(sourceMipmap.Bytes, 0, sourceMipmap.Bytes.Length);
+
                 return new ImageResult
                 {
                     Bytes = sourceMipmap.Bytes,
@@ -132,6 +137,12 @@ namespace RePKG_Re.Application.Texture
                     }
                 }
             }
+
+            // 非 raw 格式(PNG/JPEG 等已编码图,容器 FIF 直接映射):字节原样返回。
+            // 流式模式必须把字节写入 outputStream,否则调用方(ConvertToImageAndSave)
+            // 创建了文件流却没内容 → 0 字节空文件(2026-08-23 实测 rgba8888+png 容器 TEX 全空)
+            if (outputStream != null && sourceMipmap.Bytes != null)
+                outputStream.Write(sourceMipmap.Bytes, 0, sourceMipmap.Bytes.Length);
 
             return new ImageResult
             {

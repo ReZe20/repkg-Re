@@ -2,8 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using CommandLine;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Package;
 using RePKG_Re.Core.Package.Interfaces;
@@ -101,10 +101,10 @@ namespace RePKG_Re.Command
                 IEnumerable<string> projectInfoEnumerator;
 
                 if (_projectInfoToPrint.Length == 1 && _projectInfoToPrint[0] == "*")
-                    projectInfoEnumerator = Helper.GetPropertyKeysForDynamic(projectInfo);
+                    projectInfoEnumerator = Helper.GetPropertyKeysForJObject(projectInfo);
                 else
                 {
-                    projectInfoEnumerator = Helper.GetPropertyKeysForDynamic(projectInfo);
+                    projectInfoEnumerator = Helper.GetPropertyKeysForJObject(projectInfo);
                     projectInfoEnumerator = projectInfoEnumerator.Where(x =>
                         _projectInfoToPrint.Contains(x, StringComparer.OrdinalIgnoreCase));
                 }
@@ -153,7 +153,7 @@ namespace RePKG_Re.Command
         {
         }
 
-        private static dynamic GetProjectInfo(FileInfo packageFile)
+        private static JObject GetProjectInfo(FileInfo packageFile)
         {
             var directory = packageFile.Directory;
             if (directory == null)
@@ -163,17 +163,17 @@ namespace RePKG_Re.Command
             if (projectJson.Length == 0 || !projectJson[0].Exists)
                 return null;
 
-            return JsonConvert.DeserializeObject(File.ReadAllText(projectJson[0].FullName));
+            return JObject.Parse(File.ReadAllText(projectJson[0].FullName));
         }
 
-        private static bool MatchesFilter(dynamic project)
+        private static bool MatchesFilter(JObject project)
         {
             if (project == null)
                 return true;
 
             if (!string.IsNullOrEmpty(_options.TitleFilter))
             {
-                var title = (string) project.title;
+                var title = (string) project["title"];
                 if (!title.Contains(_options.TitleFilter, StringComparison.OrdinalIgnoreCase))
                     return false;
             }
@@ -182,28 +182,20 @@ namespace RePKG_Re.Command
         }
     }
 
-    [Verb("info", HelpText = "Dumps PKG/TEX info.")]
     public class InfoOptions
     {
-        [Value(0, Required = true, HelpText = "Path to file which you want to get info about", MetaName = "Input file")]
         public string Input { get; set; }
 
-        [Option('s', "sort", HelpText = "Sort entries a-z", Default = false)]
         public bool Sort { get; set; }
 
-        [Option('b', "sortby", HelpText = "Sort by ... (available options: name, extension, size)", Default = "name")]
         public string SortBy { get; set; }
 
-        [Option('t', "tex", HelpText = "Dump info about all tex files from specified directory")]
         public bool TexDirectory { get; set; }
 
-        [Option('p', "projectinfo", HelpText = "Keys to dump from project.json (delimit using comma) (* for all)")]
         public string ProjectInfo { get; set; }
 
-        [Option('e', "printentries", HelpText = "Print entries in packages")]
         public bool PrintEntries { get; set; }
 
-        [Option("title-filter", HelpText = "Title filter")]
         public string TitleFilter { get; set; }
     }
 }

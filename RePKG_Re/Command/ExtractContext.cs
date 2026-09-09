@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Application.Texture;
 using RePKG_Re.Core.Package;
@@ -636,9 +637,9 @@ namespace RePKG_Re.Command
             if (projectJson.Length == 0 || !projectJson[0].Exists)
                 return;
 
-            dynamic json = JsonConvert.DeserializeObject(File.ReadAllText(projectJson[0].FullName));
-            title = json.title;
-            preview = json.preview;
+            var json = JObject.Parse(File.ReadAllText(projectJson[0].FullName));
+            title = (string)json["title"];
+            preview = (string)json["preview"];
         }
 
         private void GetProjectFolderNameAndPreviewImage(FileInfo packageFile, string defaultProjectName,

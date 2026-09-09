@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using Newtonsoft.Json;
+using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace RePKG_Re.Command
 {
@@ -29,7 +30,10 @@ namespace RePKG_Re.Command
             BatchManifest manifest;
             try
             {
-                manifest = JsonConvert.DeserializeObject<BatchManifest>(File.ReadAllText(path));
+                // JObject 手写解析:NativeAOT 下 Newtonsoft 反射式构造器发现不可用
+                // (GetConstructors 返回空,[JsonConstructor] 也无济于事——AOT 裁剪裁掉了构造器元数据,
+                //  2026-09-09 实测)。manifest 结构固定,手写零反射、AOT 天然安全。
+                manifest = Parse(File.ReadAllText(path));
             }
             catch (Exception e)
             {
@@ -40,6 +44,73 @@ namespace RePKG_Re.Command
 
             manifest.Validate();
             return manifest;
+        }
+
+        private static BatchManifest Parse(string json)
+        {
+            var root = JObject.Parse(json);
+
+            var manifest = new BatchManifest
+            {
+                Threads = (int?)GetProp(root, "threads") ?? 0,
+                Wallpapers = new List<BatchWallpaper>(),
+                Options = null
+            };
+
+            if (GetProp(root, "wallpapers") is JArray wallpapers)
+            {
+                foreach (var item in wallpapers)
+                {
+                    manifest.Wallpapers.Add(new BatchWallpaper
+                    {
+                        Id = (string)GetProp((JObject)item, "id"),
+                        Input = (string)GetProp((JObject)item, "input"),
+                        Output = (string)GetProp((JObject)item, "output")
+                    });
+                }
+            }
+
+            if (GetProp(root, "options") is JObject o)
+            {
+                manifest.Options = new BatchOptionsModel
+                {
+                    Overwrite = (bool?)GetProp(o, "overwrite") ?? false,
+                    OnlyPaths = ToStringArray(GetProp(o, "onlypaths")),
+                    IgnorePaths = ToStringArray(GetProp(o, "ignorepaths")),
+                    PathsDepth = (int?)GetProp(o, "pathsDepth") ?? 0,
+                    OnlyExts = ToStringArray(GetProp(o, "onlyexts")),
+                    IgnoreExts = ToStringArray(GetProp(o, "ignoreexts")),
+                    OutputOnlyExts = ToStringArray(GetProp(o, "outputOnlyExts")),
+                    OutputIgnoreExts = ToStringArray(GetProp(o, "outputIgnoreExts")),
+                    KeepSubfolderStructure = (bool?)GetProp(o, "keepSubfolderStructure") ?? false,
+                    NoTexConvert = (bool?)GetProp(o, "noTexConvert") ?? false,
+                    OnlyTexImages = (bool?)GetProp(o, "onlyTexImages") ?? false,
+                    FilterEffectImages = (int?)GetProp(o, "filterEffectImages") ?? 0
+                };
+            }
+
+            return manifest;
+        }
+
+        /// <summary>
+        /// 大小写不敏感取键:复刻 Newtonsoft 默认属性名匹配语义(WE Tool 写入端键名混合
+        /// camelCase/全小写,旧版 JsonConvert 大小写不敏感照样命中;手写解析必须一致)。
+        /// </summary>
+        private static JToken GetProp(JObject o, string name)
+        {
+            foreach (var p in o.Properties())
+            {
+                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                    return p.Value;
+            }
+            return null;
+        }
+
+        private static string[] ToStringArray(JToken token)
+        {
+            if (token is JArray array)
+                return array.Select(x => (string)x).ToArray();
+            return null;
         }
 
         private void Validate()

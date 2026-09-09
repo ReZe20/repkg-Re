@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '手动触发的版本号（如 v0.4.1），留空则用分支名'
+        description: '手动触发的版本号（如 v0.5.3），留空则用分支名'
         required: false
         default: ''
       notes:
@@ -26,16 +26,32 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
-      - name: 发布 win-x64（框架依赖单文件）
-        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -o publish/win-x64
+      # NativeAOT 发布:AotWinX64 profile 固定 net10.0 + win-x64 + 自包含 + PublishAot,
+      # 输出 bin/publish-aot/(与本地/WE Tool 构建同源)。产物 = RePKG_Re.exe(~17MB) + THIRD-PARTY-NOTICES.txt,
+      # pdb 已由 CopyOutputSymbolsToPublishDirectory=false 抑制(见 RePKG_Re.csproj 注释)。
+      - name: 发布 win-x64 NativeAOT（自包含单 exe，免 .NET 运行时）
+        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotWinX64 --nologo -v:m
+
+      # AOT 假成功防护:ILC 链接失败时 publish 仍可能 exit 0,但 exe 启动即崩(Costura 时代实测教训)。
+      # 冒烟 --help 必须 exit 0;体积 <10MB 说明退回了框架依赖空壳 exe(~160KB),直接报错拦下。
+      - name: 冒烟验证 AOT exe 可独立运行
+        shell: pwsh
+        run: |
+          $exe = "RePKG_Re/bin/publish-aot/RePKG_Re.exe"
+          if (-not (Test-Path $exe)) { throw "未找到 AOT 产物: $exe" }
+          $len = (Get-Item $exe).Length
+          if ($len -lt 10MB) { throw "AOT exe 体积异常($len 字节 < 10MB),疑似非 AOT 产物" }
+          & $exe --help *> $null
+          if ($LASTEXITCODE -ne 0) { throw "AOT exe --help 冒烟失败 exit $LASTEXITCODE" }
+          Write-Host "冒烟通过: $exe ($len 字节),--help exit 0"
 
       - name: 打包 zip 并生成版本介绍
         shell: pwsh
         run: |
           $ver = if ("${{ inputs.version }}") { "${{ inputs.version }}" } elseif ("${{ github.ref_name }}" -like "v*") { "${{ github.ref_name }}" } else { "dev" }
-          Compress-Archive -Path "publish/win-x64/*" -DestinationPath "RePKG_Re-$ver-win-x64.zip"
+          Compress-Archive -Path "RePKG_Re/bin/publish-aot/*" -DestinationPath "RePKG_Re-$ver-win-x64.zip"
           echo "version=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           # 版本介绍：手动输入的 notes 优先，其次 CHANGELOG.md 中当前版本的段落

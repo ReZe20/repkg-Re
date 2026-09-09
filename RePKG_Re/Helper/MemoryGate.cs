@@ -84,7 +84,7 @@ namespace RePKG_Re
 
         private void Sample()
         {
-            var st = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX)) };
+            var st = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
             if (GlobalMemoryStatusEx(ref st))
                 Interlocked.Exchange(ref _availPhys, (long)st.ullAvailPhys);
         }

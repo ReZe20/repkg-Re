@@ -3,37 +3,30 @@
         <RootNamespace>RePKG_Re</RootNamespace>
         <AssemblyName>RePKG_Re</AssemblyName>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net472</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <LangVersion>latest</LangVersion>
         <Version>0.5.3</Version>
         <Authors>NotScuffed, ReZe20</Authors>
         <Copyright>Copyright © NotScuffed 2019-2025, ReZe20 2026</Copyright>
     </PropertyGroup>
-    
+
+    <!-- AOT 原生 pdb(几十 MB)由 SDK 的 _CopyAotSymbols(AfterTargets=Publish)在发布收尾拷进发布目录,
+         与项目自身的清理目标相对顺序不可靠(实测 SDK 的排在后面 → 删了又被拷回来)。
+         直接关符号拷贝,发布目录根本不产生 pdb;obj 里的 pdb 不受影响。 -->
+    <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+        <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+    </PropertyGroup>
+
     <ItemGroup>
         <ProjectReference Include="..\RePKG_Re.Application\RePKG_Re.Application.csproj" />
         <ProjectReference Include="..\RePKG_Re.Core\RePKG_Re.Core.csproj" />
     </ItemGroup>
-    
+
     <ItemGroup>
-        <PackageReference Include="CommandLineParser" Version="2.9.1" />
-        <PackageReference Include="Costura.Fody" Version="6.2.0" PrivateAssets="All" />
-    </ItemGroup>
-    
-    <ItemGroup>
-      <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
+        <PackageReference Include="System.CommandLine" Version="2.0.10" />
     </ItemGroup>
 
     <ItemGroup>
         <None Include="$(ProjectDir)/../THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
-
-    <!-- 发布后清理：只保留 exe 与 THIRD-PARTY-NOTICES.txt（依赖已由 Costura 内嵌）。
-         放在 csproj 而非 pubxml，确保 VS 发布（MSBuild）与命令行发布（dotnet publish）都生效 -->
-    <Target Name="CleanPublishOutput" AfterTargets="Publish">
-        <ItemGroup>
-            <FilesToRemove Include="$(PublishDir)*.dll;$(PublishDir)*.pdb;$(PublishDir)*.config;$(PublishDir)*.json" />
-        </ItemGroup>
-        <Delete Files="@(FilesToRemove)" />
-    </Target>
 </Project>

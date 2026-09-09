@@ -9,7 +9,6 @@ using System.Runtime;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using CommandLine;
 using Newtonsoft.Json;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Package;
@@ -17,14 +16,10 @@ using RePKG_Re.Core.Package.Enums;
 
 namespace RePKG_Re.Command
 {
-    [Verb("batch", HelpText =
-        "Extract multiple wallpapers from a manifest file. Errors are reported as JSON events; the batch continues.")]
     public class BatchOptions
     {
-        [Option('m', "manifest", Required = true, HelpText = "Path to manifest JSON file")]
         public string Manifest { get; set; }
 
-        [Option('t', "threads", HelpText = "Max worker threads (0 = CPU core count)", Default = 0)]
         public int Threads { get; set; }
     }
 

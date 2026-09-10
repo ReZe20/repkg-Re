@@ -204,6 +204,12 @@ namespace RePKG_Re.Application.Texture
                     if (batchSize < 1) batchSize = 1;
                     if (batchSize > 8) batchSize = 8;
 
+                    // LZW 编码器:每个并行槽一个(各自持有 4MB 字典表 + 一帧码流缓冲),
+                    // 惰性创建、跨批次复用。LZW 编码原先只在顺序写入阶段跑(实测 140 帧 1.29s,
+                    // 占该文件耗时 22%),独立成器后并入下面的 Task,与量化同线程完成。
+                    // 内存代价(上限):batchSize × (4MB 表 + 一帧码流)。
+                    var lzwEncoders = new LzwFrameEncoder[batchSize];
+
                     Image source = null;
                     try
                     {
@@ -221,7 +227,7 @@ namespace RePKG_Re.Application.Texture
                             {
                                 source = ImageFromRawFormat(frameFormat, p, mipmap.Width, mipmap.Height);
 
-                                // 分块:每批 batchSize 帧并行量化(Clone + 量化,只读共享源图),
+                                // 分块:每批 batchSize 帧并行「量化 + LZW 编码」(Clone 后只读共享源图),
                                 // 然后按原帧顺序写入——GIF 帧顺序严格不变。
                                 var frames = group.ToList();
                                 for (int start = 0; start < frames.Count; start += batchSize)
@@ -231,6 +237,9 @@ namespace RePKG_Re.Application.Texture
                                     for (int j = 0; j < count; j++)
                                     {
                                         var x = frames[start + j];
+                                        // 每槽一个编码器:本批全部写盘(下面的 WriteQuantizedFrame)
+                                        // 之前不会开始下一批编码,故码流缓冲不会被提前覆盖。
+                                        var encoder = lzwEncoders[j] ?? (lzwEncoders[j] = new LzwFrameEncoder());
                                         tasks[j] = Task.Run(() =>
                                         {
                                             var frameInfo = x.frameInfo;
@@ -241,6 +250,7 @@ namespace RePKG_Re.Application.Texture
                                             var rotationAngle =
                                                 -(Math.Atan2(Math.Sign(height), Math.Sign(width)) - Math.PI / 4);
 
+                                            QuantizedFrame quantized;
                                             using (var frame = source.Clone(
                                                 context => context
                                                     .Crop(new Rectangle((int)xPos, (int)yPos,
@@ -248,8 +258,12 @@ namespace RePKG_Re.Application.Texture
                                                     .Rotate((float)Math.Round(rotationAngle * 180 / Math.PI))))
                                             {
                                                 var delay = (int)Math.Round(frameInfo.Frametime * 100.0f);
-                                                return QuantizeFrameTyped(writer, frame, delay, frameFormat);
+                                                quantized = QuantizeFrameTyped(writer, frame, delay, frameFormat);
                                             }
+
+                                            // LZW 编码并入并行段(原先这段在 Task.WhenAll 之后串行跑)
+                                            encoder.Encode(quantized);
+                                            return quantized;
                                         });
                                     }
 

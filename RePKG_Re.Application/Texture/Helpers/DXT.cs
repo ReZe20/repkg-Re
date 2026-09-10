@@ -21,6 +21,7 @@
 // most of the algorithms and data used in this Class-file has been ported from LibSquish!
 // http://code.google.com/p/libsquish/
 
+using System;
 using RePKG_Re.Core.Texture;
 
 namespace RePKG_Re.Application.Texture.Helpers
@@ -69,7 +70,7 @@ namespace RePKG_Re.Application.Texture.Helpers
             var alpha1 = block[blockIndex + 1];
 
             // compare the values to build the codebook
-            var codes = new byte[8];
+            Span<byte> codes = stackalloc byte[8];
             codes[0] = alpha0;
             codes[1] = alpha1;
             if (alpha0 <= alpha1)
@@ -90,7 +91,7 @@ namespace RePKG_Re.Application.Texture.Helpers
             }
 
             // decode indices
-            var indices = new byte[16];
+            Span<byte> indices = stackalloc byte[16];
             var blockSrc_pos = 2;
             var indices_pos = 0;
             for (var i = 0; i < 2; i++)
@@ -121,7 +122,7 @@ namespace RePKG_Re.Application.Texture.Helpers
         private static void DecompressColor(byte[] rgba, byte[] block, int blockIndex, bool isDxt1)
         {
             // Unpack Endpoints
-            var codes = new byte[16];
+            Span<byte> codes = stackalloc byte[16];
             var a = Unpack565(block, blockIndex, 0, codes, 0);
             var b = Unpack565(block, blockIndex, 2, codes, 4);
 
@@ -148,7 +149,7 @@ namespace RePKG_Re.Application.Texture.Helpers
             codes[12 + 3] = (isDxt1 && a <= b) ? (byte)0 : (byte)255;
 
             // unpack the indices
-            var indices = new byte[16];
+            Span<byte> indices = stackalloc byte[16];
             for (var i = 0; i < 4; i++)
             {
                 var packed = block[blockIndex + 4 + i];
@@ -171,7 +172,7 @@ namespace RePKG_Re.Application.Texture.Helpers
             }
         }
 
-        private static int Unpack565(byte[] block, int blockIndex, int packed_offset, byte[] colour, int colour_offset)
+        private static int Unpack565(byte[] block, int blockIndex, int packed_offset, Span<byte> colour, int colour_offset)
         {
             // Build packed value
             var value = block[blockIndex + packed_offset] | (block[blockIndex + 1 + packed_offset] << 8);

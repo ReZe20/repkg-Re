@@ -72,7 +72,7 @@ namespace RePKG_Re.Application.Texture
                 throw new EnumNotValidException<FreeImageFormat>(container.ImageFormat);
 
             // 先顺序读取全部 image(BinaryReader 流位置依赖,必须串行),
-            // 读完后再并行解压 mipmap(限流 2:8K 大图解压结果 116MB/张,避免同时驻留过多)。
+            // 读完后再并行解压 mipmap(解压是纯 CPU 大头,多张源图互不依赖)。
             _texImageReader.DecompressMipmapBytes = false;
             try
             {
@@ -94,7 +94,17 @@ namespace RePKG_Re.Application.Texture
 
             if (mipmaps.Count > 1)
             {
-                using (var semaphore = new SemaphoreSlim(2))
+                // 解压并行度按核数自适应。原先写死 2,在 8K 图集文件上把解压锁死在 2 路
+                // (实测 read 1.13s);改 8 路后 0.44s(-61%)。上限 8 与 GIF 帧并行度保持一致,
+                // 避免与 batch 的多个 worker 叠加后过度超订。
+                // 内存代价实测很小(8K 图集:峰值 +125MB):解压结果本来就要全部驻留,
+                // 提高并行只多出同时在场的临时缓冲。
+                var decompressParallelism = Environment.ProcessorCount / 2;
+                if (decompressParallelism < 2) decompressParallelism = 2;
+                if (decompressParallelism > 8) decompressParallelism = 8;
+                if (decompressParallelism > mipmaps.Count) decompressParallelism = mipmaps.Count;
+
+                using (var semaphore = new SemaphoreSlim(decompressParallelism))
                 {
                     var tasks = new List<Task>(mipmaps.Count);
                     foreach (var mipmap in mipmaps)

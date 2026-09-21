@@ -1,0 +1,43 @@
+name: 构建与测试
+
+# 合并前拦一道:发布工作流只在打 tag 时跑,AOT 断裂/测试回归要等到发版才暴露,太晚。
+# 步骤与 release.yml 同源(同一 profile、同一冒烟判据),区别是不建 Release、不传产物。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    # NativeAOT 只能在目标平台链接(Windows 上产 win-x64 exe),不能用 ubuntu
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建
+        run: dotnet build RePKG_Re.sln -c Release --nologo -v:m
+
+      # TestTextures/ 语料(第三方壁纸素材)不入库:缺失的用例记为"跳过",其余照常断言
+      - name: 单元测试
+        run: dotnet test RePKG_Re.Tests/RePKG_Re.Tests.csproj -c Release --nologo -v:m
+
+      - name: 发布 win-x64 NativeAOT 并冒烟
+        shell: pwsh
+        run: |
+          dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotWinX64 --nologo -v:m
+          $exe = "RePKG_Re/bin/publish-aot/RePKG_Re.exe"
+          if (-not (Test-Path $exe)) { throw "未找到 AOT 产物: $exe" }
+          $len = (Get-Item $exe).Length
+          if ($len -lt 5MB) { throw "AOT exe 体积异常($len 字节 < 5MB),疑似退回框架依赖产物" }
+          & $exe --help *> $null
+          if ($LASTEXITCODE -ne 0) { throw "--help 冒烟失败 exit $LASTEXITCODE" }
+          Write-Host "冒烟通过: $exe ($len 字节)"

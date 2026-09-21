@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Newtonsoft.Json;
+using System.Text.Json;
 using NUnit.Framework;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Application.Texture;
@@ -103,7 +103,7 @@ namespace RePKG_Re.Tests
             int threads = 8, object options = null)
         {
             var path = Path.Combine(_tempDir, name);
-            var json = JsonConvert.SerializeObject(new
+            var json = JsonSerializer.Serialize(new
             {
                 threads,
                 wallpapers = wallpapers.Select(w => new { id = w.id, input = w.input, output = w.output }).ToList(),
@@ -113,7 +113,40 @@ namespace RePKG_Re.Tests
             return path;
         }
 
-        private static List<dynamic> RunBatchAndCapture(string manifestPath, int threads = 0)
+        /// <summary>
+        /// batch 事件行的测试侧读取器。事件协议是前端契约的一部分,字段名以 Batch.cs 的发射格式为准。
+        /// </summary>
+        private sealed class Ev
+        {
+            public string Type { get; }
+            public string Action { get; }
+            public string Id { get; }
+            public int Pos { get; }
+            public int TotalEntries { get; }
+
+            private Ev(JsonElement e)
+            {
+                Type = Str(e, "type");
+                Action = Str(e, "action");
+                Id = Str(e, "id");
+                Pos = Int(e, "pos");
+                TotalEntries = Int(e, "total_entries");
+            }
+
+            public static Ev Parse(string json)
+            {
+                using var doc = JsonDocument.Parse(json);
+                return new Ev(doc.RootElement.Clone());
+            }
+
+            private static string Str(JsonElement e, string name)
+                => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+            private static int Int(JsonElement e, string name)
+                => e.TryGetProperty(name, out var v) && v.TryGetInt32(out var n) ? n : 0;
+        }
+
+        private static List<Ev> RunBatchAndCapture(string manifestPath, int threads = 0)
         {
             var sw = new StringWriter();
             var original = Console.Out;
@@ -130,7 +163,7 @@ namespace RePKG_Re.Tests
             return sw.ToString()
                 .Split('\n')
                 .Where(l => l.StartsWith("{"))
-                .Select(l => JsonConvert.DeserializeObject<dynamic>(l))
+                .Select(l => Ev.Parse(l))
                 .ToList();
         }
 
@@ -176,6 +209,86 @@ namespace RePKG_Re.Tests
             Assert.That(opts.Overwrite, Is.True);
         }
 
+        /// <summary>
+        /// README「Manifest schema」那张表的守门用例:12 个 options 键一次填满,逐字段断言映射结果,
+        /// 并断言 manifest 无法表达的那几个必须保持关闭。表里任何一格与代码分叉(改名、漏映射、
+        /// 默认值变了),这里就红。
+        /// </summary>
+        [Test]
+        public void ManifestSchema_EveryDocumentedKey_IsMapped()
+        {
+            var path = Path.Combine(_tempDir, "full.json");
+            // 手写 JSON 而不是序列化匿名对象:测试里出现的键名就是线上格式
+            File.WriteAllText(path, @"{
+  ""threads"": 3,
+  ""wallpapers"": [ { ""id"": ""W1"", ""input"": ""C:/in"", ""output"": ""C:/out"" } ],
+  ""options"": {
+    ""overwrite"": true,
+    ""onlypaths"": [ ""materials"", ""sounds/ambient"" ],
+    ""ignorepaths"": [ ""effects"" ],
+    ""pathsDepth"": 2,
+    ""onlyexts"": [ ""png"" ],
+    ""ignoreexts"": [ ""mp4"" ],
+    ""outputOnlyExts"": [ ""png"", ""json"" ],
+    ""outputIgnoreExts"": [ ""dat"" ],
+    ""keepSubfolderStructure"": true,
+    ""noTexConvert"": true,
+    ""onlyTexImages"": true,
+    ""filterEffectImages"": 85
+  }
+}");
+
+            var manifest = BatchManifest.Load(path);
+            Assert.That(manifest.Threads, Is.EqualTo(3));
+            Assert.That(manifest.Wallpapers[0].Id, Is.EqualTo("W1"));
+
+            var o = manifest.ToExtractOptions();
+            Assert.That(o.Overwrite, Is.True);
+            Assert.That(o.OnlyPaths, Is.EqualTo("materials,sounds/ambient"));
+            Assert.That(o.IgnorePaths, Is.EqualTo("effects"));
+            Assert.That(o.PathsDepth, Is.EqualTo(2));
+            Assert.That(o.OnlyExts, Is.EqualTo("png"));
+            Assert.That(o.IgnoreExts, Is.EqualTo("mp4"));
+            Assert.That(o.OutputOnlyExts, Is.EqualTo("png,json"));
+            Assert.That(o.OutputIgnoreExts, Is.EqualTo("dat"));
+            // 表里标明"名字与行为相反"的那一格:true 把条目路径压平,等价 -s/--singledir
+            Assert.That(o.SingleDir, Is.True);
+            Assert.That(o.NoTexConvert, Is.True);
+            Assert.That(o.OnlyTexImages, Is.True);
+            Assert.That(o.FilterEffectImages, Is.EqualTo(85.0));
+
+            // manifest 表达不了的选项:batch 自己接管,映射结果必须是关闭/空
+            Assert.That(o.Lazy, Is.False);            // 执行器本就按需读取条目
+            Assert.That(o.OutputDirectory, Is.Empty); // 输出目录按每张壁纸单独给
+            Assert.That(o.TexDirectory, Is.False);
+            Assert.That(o.Recursive, Is.False);
+            Assert.That(o.UseName, Is.False);
+            Assert.That(o.CopyProject, Is.False);
+            Assert.That(o.MaxEntrySize, Is.Zero);
+            Assert.That(o.MinEntrySize, Is.Zero);
+        }
+
+        /// <summary>表头那句「manifest 键按不区分大小写匹配」的守门用例。</summary>
+        [Test]
+        public void Manifest_Keys_Are_CaseInsensitive()
+        {
+            var path = Path.Combine(_tempDir, "case.json");
+            File.WriteAllText(path, @"{
+  ""Threads"": 2,
+  ""Wallpapers"": [ { ""Id"": ""A"", ""Input"": ""C:/in"", ""Output"": ""C:/out"" } ],
+  ""Options"": { ""PathsDepth"": 1, ""OnlyPaths"": [ ""materials"" ], ""KeepSubfolderStructure"": true }
+}");
+
+            var manifest = BatchManifest.Load(path);
+            Assert.That(manifest.Threads, Is.EqualTo(2));
+            Assert.That(manifest.Wallpapers[0].Id, Is.EqualTo("A"));
+
+            var o = manifest.ToExtractOptions();
+            Assert.That(o.PathsDepth, Is.EqualTo(1));
+            Assert.That(o.OnlyPaths, Is.EqualTo("materials"));
+            Assert.That(o.SingleDir, Is.True);
+        }
+
         [Test]
         public void Batch_Extracts_MultipleWallpapers_With_DoneEvents()
         {
@@ -200,11 +313,11 @@ namespace RePKG_Re.Tests
 
             var events = RunBatchAndCapture(manifestPath);
 
-            Assert.That(events.Any(e => e.type == "batch" && e.action == "done"), Is.True);
-            var dones = events.Where(e => e.type == "wallpaper" && e.action == "done").Select(e => (string)e.id).ToList();
+            Assert.That(events.Any(e => e.Type == "batch" && e.Action == "done"), Is.True);
+            var dones = events.Where(e => e.Type == "wallpaper" && e.Action == "done").Select(e => e.Id).ToList();
             Assert.That(dones, Is.EquivalentTo(new[] { "A", "B" }));
             // 无错误事件
-            Assert.That(events.Any(e => e.type == "error"), Is.False);
+            Assert.That(events.Any(e => e.Type == "error"), Is.False);
 
             // 输出文件:wp1 的 tex 转换出 png + tex-json,raw 保留
             Assert.That(ListFiles(out1),
@@ -227,8 +340,8 @@ namespace RePKG_Re.Tests
 
             var events = RunBatchAndCapture(manifestPath);
 
-            Assert.That(events.Any(e => e.type == "batch" && e.action == "done"), Is.True);
-            Assert.That(events.Any(e => e.type == "error"), Is.False);
+            Assert.That(events.Any(e => e.Type == "batch" && e.Action == "done"), Is.True);
+            Assert.That(events.Any(e => e.Type == "error"), Is.False);
             Assert.That(ListFiles(outDir),
                 Is.EquivalentTo(new[] { "tex/scene.png", "tex/scene.tex", "tex/scene.tex-json", "txt/foo.txt" }));
         }
@@ -255,10 +368,10 @@ namespace RePKG_Re.Tests
 
             var events = RunBatchAndCapture(manifestPath);
 
-            var dones = events.Where(e => e.type == "wallpaper" && e.action == "done")
-                .Select(e => (string)e.id).ToList();
+            var dones = events.Where(e => e.Type == "wallpaper" && e.Action == "done")
+                .Select(e => e.Id).ToList();
             Assert.That(dones, Is.EquivalentTo(new[] { "F", "D" }));
-            Assert.That(events.Any(e => e.type == "error"), Is.False);
+            Assert.That(events.Any(e => e.Type == "error"), Is.False);
             Assert.That(ListFiles(out1), Is.EquivalentTo(new[] { "txt/a.txt" }));
             Assert.That(ListFiles(out2), Is.EquivalentTo(new[] { "txt/b.txt" }));
         }
@@ -316,11 +429,11 @@ namespace RePKG_Re.Tests
             var events = RunBatchAndCapture(manifestPath);
 
             // 坏包报 error,不中断;好壁纸照常完成
-            Assert.That(events.Any(e => e.type == "error" && e.id == "BAD"), Is.True);
-            Assert.That(events.Any(e => e.type == "error" && e.id == "GOOD"), Is.False);
-            Assert.That(events.Any(e => e.type == "wallpaper" && e.action == "done" && e.id == "GOOD"), Is.True);
-            Assert.That(events.Any(e => e.type == "wallpaper" && e.action == "done" && e.id == "BAD"), Is.True);
-            Assert.That(events.Any(e => e.type == "batch" && e.action == "done"), Is.True);
+            Assert.That(events.Any(e => e.Type == "error" && e.Id == "BAD"), Is.True);
+            Assert.That(events.Any(e => e.Type == "error" && e.Id == "GOOD"), Is.False);
+            Assert.That(events.Any(e => e.Type == "wallpaper" && e.Action == "done" && e.Id == "GOOD"), Is.True);
+            Assert.That(events.Any(e => e.Type == "wallpaper" && e.Action == "done" && e.Id == "BAD"), Is.True);
+            Assert.That(events.Any(e => e.Type == "batch" && e.Action == "done"), Is.True);
             Assert.That(ListFiles(outGood), Is.EquivalentTo(new[] { "txt/ok.txt" }));
         }
 
@@ -336,7 +449,7 @@ namespace RePKG_Re.Tests
                 new List<(string, string, string)> { ("0", wp, outDir) }, threads: 2);
 
             var events = RunBatchAndCapture(manifestPath);
-            Assert.That(events.Any(e => e.type == "error"), Is.False);
+            Assert.That(events.Any(e => e.Type == "error"), Is.False);
             Assert.That(ListFiles(outDir), Is.EquivalentTo(new[] { "txt/a.txt" }));
         }
 
@@ -355,10 +468,10 @@ namespace RePKG_Re.Tests
                 new List<(string, string, string)> { ("0", wp, outDir) }, threads: 1);
 
             var events = RunBatchAndCapture(manifestPath, threads: 1);
-            var entryEvents = events.Where(e => e.type == "entry").Select(e => (int)e.pos).ToList();
+            var entryEvents = events.Where(e => e.Type == "entry").Select(e => e.Pos).ToList();
             Assert.That(entryEvents, Is.EqualTo(new[] { 1, 2, 3 }));
-            var start = events.First(e => e.type == "wallpaper");
-            Assert.That((int)start.total_entries, Is.EqualTo(3));
+            var start = events.First(e => e.Type == "wallpaper");
+            Assert.That(start.TotalEntries, Is.EqualTo(3));
         }
 
         [Test]

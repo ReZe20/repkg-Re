@@ -9,7 +9,7 @@ using System.Runtime;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
+using RePKG_Re.Core.Json;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Package;
 using RePKG_Re.Core.Package.Enums;
@@ -308,7 +308,7 @@ namespace RePKG_Re.Command
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
 
-        private static string J(string s) => JsonConvert.SerializeObject(s);
+        private static string J(string s) => LegacyJson.QuoteString(s);
 
         private static void EmitError(string id, string entry, string msg)
             => Console.WriteLine($"{{\"id\":{J(id)},\"type\":\"error\",\"entry\":{J(entry)},\"msg\":{J(msg)}}}");

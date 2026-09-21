@@ -79,11 +79,13 @@ namespace RePKG_Re.Tests
 
         public static BinaryReader LoadTestFile(string name)
         {
-            return new BinaryReader(File.Open(
-                $"{TestHelper.BasePath}\\{InputDirectoryName}\\{name}.tex",
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read), Encoding.UTF8);
+            // 语料是第三方壁纸素材、体积也不小,没入库(CI 与本机都可能没有)。缺文件时判"跳过"而不是"失败",
+            // 这样 CI 能跑其余真实断言;本机把 .tex 放进 TestTextures/ 这批用例就自动生效。
+            var path = $"{TestHelper.BasePath}\\{InputDirectoryName}\\{name}.tex";
+            if (!File.Exists(path))
+                Assert.Ignore($"缺少测试语料 {path}(放入 {InputDirectoryName}/ 即可启用这批用例)");
+
+            return new BinaryReader(File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read), Encoding.UTF8);
         }
 
         public static void SaveValidatedBytes(byte[] bytes, string name)

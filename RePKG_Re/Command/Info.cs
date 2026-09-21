@@ -2,8 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using System.Text.Json;
+using RePKG_Re.Core.Json;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Package;
 using RePKG_Re.Core.Package.Interfaces;
@@ -101,20 +101,21 @@ namespace RePKG_Re.Command
                 IEnumerable<string> projectInfoEnumerator;
 
                 if (_projectInfoToPrint.Length == 1 && _projectInfoToPrint[0] == "*")
-                    projectInfoEnumerator = Helper.GetPropertyKeysForJObject(projectInfo);
+                    projectInfoEnumerator = Helper.GetPropertyKeysFor(projectInfo);
                 else
                 {
-                    projectInfoEnumerator = Helper.GetPropertyKeysForJObject(projectInfo);
+                    projectInfoEnumerator = Helper.GetPropertyKeysFor(projectInfo);
                     projectInfoEnumerator = projectInfoEnumerator.Where(x =>
                         _projectInfoToPrint.Contains(x, StringComparer.OrdinalIgnoreCase));
                 }
 
                 foreach (var key in projectInfoEnumerator)
                 {
-                    if (projectInfo[key] == null)
+                    var value = LegacyJson.GetPropExact(projectInfo, key);
+                    if (value is null)
                         Console.WriteLine(key + @": null");
                     else
-                        Console.WriteLine(key + @": " + projectInfo[key].ToString());
+                        Console.WriteLine(key + @": " + LegacyJson.ToTokenString(value));
                 }
             }
 
@@ -153,7 +154,7 @@ namespace RePKG_Re.Command
         {
         }
 
-        private static JObject GetProjectInfo(FileInfo packageFile)
+        private static JsonElement? GetProjectInfo(FileInfo packageFile)
         {
             var directory = packageFile.Directory;
             if (directory == null)
@@ -163,17 +164,17 @@ namespace RePKG_Re.Command
             if (projectJson.Length == 0 || !projectJson[0].Exists)
                 return null;
 
-            return JObject.Parse(File.ReadAllText(projectJson[0].FullName));
+            return LegacyJson.Parse(File.ReadAllText(projectJson[0].FullName));
         }
 
-        private static bool MatchesFilter(JObject project)
+        private static bool MatchesFilter(JsonElement? project)
         {
-            if (project == null)
+            if (project is null)
                 return true;
 
             if (!string.IsNullOrEmpty(_options.TitleFilter))
             {
-                var title = (string) project["title"];
+                var title = LegacyJson.AsString(LegacyJson.GetPropExact(project, "title"));
                 if (!title.Contains(_options.TitleFilter, StringComparison.OrdinalIgnoreCase))
                     return false;
             }

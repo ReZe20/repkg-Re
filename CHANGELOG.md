@@ -1,5 +1,17 @@
 # 更新日志
 
+## v0.5.4
+
+- 依赖:System.Text.Json 替换 Newtonsoft.Json —— 自研 `LegacyJson` 复刻旧输出的字节形状(2 空格缩进、CRLF、`"k": v`、`True/False`、JSON null→空串、`1.2e3`→1200),Native AOT 产物 17,233,920 → 7,383,552 字节(-9.85MB);此前 Newtonsoft 构造器反射会把整套编解码注册表钉在裁剪可达图上,删不掉
+- 验证:三套语料 242 个输出文件哈希、以及归一化后的 stdout 与 v0.5.3 逐字节一致(`.tex-json` 侧车格式不变,前端与既有基线都依赖它)
+- 修复:命令行输出不再跟随系统显示语言 —— System.CommandLine 自带 zh-Hans 等卫星资源,和手写的英文描述混在一屏,换台机器(或改系统语言)输出就变,中文侧还有双句号与套引号;UI 文化钉为不变文化,帮助/错误恒英文
+- 帮助:选项显示默认值(`-o` 的 `./output`、`-b` 的 `name`)与单位占位符(`<DIR>`/`<EXTS>`/`<KB>`/`<PERCENT>`/`<N>`/`<FILE>`);超长描述压缩(最长行 265 → 135 字符);`--threads` 原描述"0 = CPU core count"与实现不符,改为"0 = 沿用 manifest 的值"(命令行优先于 manifest)
+- 文档:README 补 manifest 全键表(顶层键 + 12 个 `options` 键的类型/默认值/对应 CLI 选项,并标注 `keepSubfolderStructure` 名称与行为相反)、删掉不存在的 `help` 命令条目、补 batch 的退出码与线程数优先级;新增两个守门用例钉住这张表(全部键逐一断言映射、键名不区分大小写)
+- 移除:`interactive` 交互模式(只有自身引用,前端与测试都不使用,提示语还指向不存在的 `help` 命令)及配套的 `SplitArguments` 分词器
+- 构建:新增 CI 工作流(构建 + 测试 + AOT 发布冒烟);release 工作流的产物体积阈值 10MB → 5MB(体积随依赖替换下降,沿用旧阈值会把正常发布判成异常)
+- 测试:仓库不携带的 `TestTextures/` 真 .tex 语料缺失时按 `Assert.Ignore` 跳过,不再让整批用例失败
+- 声明:第三方清单移除 Newtonsoft.Json 条目;测试工程也改用 System.Text.Json 写 manifest、读 batch 事件行(此前它靠 Microsoft.NET.Test.Sdk 间接引用 Newtonsoft,那是测试链的传递依赖,本就不进发布产物)
+
 ## v0.5.3
 
 - 修复:流式转换模式下视频纹理(mp4)与非 raw 格式(PNG/JPEG 已编码图)TEX 输出**空文件**——v0.5.2 引入流式重载时漏改这两个分支,只返回字节不写入文件流(症状:解包后 .mp4/.png 为 0 字节)

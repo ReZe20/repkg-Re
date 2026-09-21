@@ -2,7 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using Newtonsoft.Json.Linq;
+using System.Text.Json;
+using RePKG_Re.Core.Json;
 
 namespace RePKG_Re.Command
 {
@@ -48,70 +49,53 @@ namespace RePKG_Re.Command
 
         private static BatchManifest Parse(string json)
         {
-            var root = JObject.Parse(json);
+            // 结构固定、零反射,NativeAOT 天然安全(见 Load 里那段历史说明);取键一律大小写不敏感,
+            // 与旧 Newtonsoft 的属性匹配语义一致,实现收在 LegacyJson.GetProp。
+            var root = LegacyJson.Parse(json) ?? throw new JsonException("Manifest is not a valid JSON object.");
 
             var manifest = new BatchManifest
             {
-                Threads = (int?)GetProp(root, "threads") ?? 0,
+                Threads = LegacyJson.AsInt(GetProp(root, "threads")) ?? 0,
                 Wallpapers = new List<BatchWallpaper>(),
                 Options = null
             };
 
-            if (GetProp(root, "wallpapers") is JArray wallpapers)
+            if (GetProp(root, "wallpapers") is { ValueKind: JsonValueKind.Array } wallpapers)
             {
-                foreach (var item in wallpapers)
+                foreach (var item in wallpapers.EnumerateArray())
                 {
                     manifest.Wallpapers.Add(new BatchWallpaper
                     {
-                        Id = (string)GetProp((JObject)item, "id"),
-                        Input = (string)GetProp((JObject)item, "input"),
-                        Output = (string)GetProp((JObject)item, "output")
+                        Id = LegacyJson.AsString(GetProp(item, "id")),
+                        Input = LegacyJson.AsString(GetProp(item, "input")),
+                        Output = LegacyJson.AsString(GetProp(item, "output"))
                     });
                 }
             }
 
-            if (GetProp(root, "options") is JObject o)
+            if (GetProp(root, "options") is { ValueKind: JsonValueKind.Object } o)
             {
                 manifest.Options = new BatchOptionsModel
                 {
-                    Overwrite = (bool?)GetProp(o, "overwrite") ?? false,
-                    OnlyPaths = ToStringArray(GetProp(o, "onlypaths")),
-                    IgnorePaths = ToStringArray(GetProp(o, "ignorepaths")),
-                    PathsDepth = (int?)GetProp(o, "pathsDepth") ?? 0,
-                    OnlyExts = ToStringArray(GetProp(o, "onlyexts")),
-                    IgnoreExts = ToStringArray(GetProp(o, "ignoreexts")),
-                    OutputOnlyExts = ToStringArray(GetProp(o, "outputOnlyExts")),
-                    OutputIgnoreExts = ToStringArray(GetProp(o, "outputIgnoreExts")),
-                    KeepSubfolderStructure = (bool?)GetProp(o, "keepSubfolderStructure") ?? false,
-                    NoTexConvert = (bool?)GetProp(o, "noTexConvert") ?? false,
-                    OnlyTexImages = (bool?)GetProp(o, "onlyTexImages") ?? false,
-                    FilterEffectImages = (int?)GetProp(o, "filterEffectImages") ?? 0
+                    Overwrite = LegacyJson.AsBool(GetProp(o, "overwrite")) ?? false,
+                    OnlyPaths = LegacyJson.ToStringArray(GetProp(o, "onlypaths")),
+                    IgnorePaths = LegacyJson.ToStringArray(GetProp(o, "ignorepaths")),
+                    PathsDepth = LegacyJson.AsInt(GetProp(o, "pathsDepth")) ?? 0,
+                    OnlyExts = LegacyJson.ToStringArray(GetProp(o, "onlyexts")),
+                    IgnoreExts = LegacyJson.ToStringArray(GetProp(o, "ignoreexts")),
+                    OutputOnlyExts = LegacyJson.ToStringArray(GetProp(o, "outputOnlyExts")),
+                    OutputIgnoreExts = LegacyJson.ToStringArray(GetProp(o, "outputIgnoreExts")),
+                    KeepSubfolderStructure = LegacyJson.AsBool(GetProp(o, "keepSubfolderStructure")) ?? false,
+                    NoTexConvert = LegacyJson.AsBool(GetProp(o, "noTexConvert")) ?? false,
+                    OnlyTexImages = LegacyJson.AsBool(GetProp(o, "onlyTexImages")) ?? false,
+                    FilterEffectImages = LegacyJson.AsInt(GetProp(o, "filterEffectImages")) ?? 0
                 };
             }
 
             return manifest;
         }
 
-        /// <summary>
-        /// 大小写不敏感取键:复刻 Newtonsoft 默认属性名匹配语义(WE Tool 写入端键名混合
-        /// camelCase/全小写,旧版 JsonConvert 大小写不敏感照样命中;手写解析必须一致)。
-        /// </summary>
-        private static JToken GetProp(JObject o, string name)
-        {
-            foreach (var p in o.Properties())
-            {
-                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
-                    return p.Value;
-            }
-            return null;
-        }
-
-        private static string[] ToStringArray(JToken token)
-        {
-            if (token is JArray array)
-                return array.Select(x => (string)x).ToArray();
-            return null;
-        }
+        private static JsonElement? GetProp(JsonElement? root, string name) => LegacyJson.GetProp(root, name);
 
         private void Validate()
         {

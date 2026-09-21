@@ -4,8 +4,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Text;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using RePKG_Re.Core.Json;
+using System.Text.Json;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Application.Texture;
 using RePKG_Re.Core.Package;
@@ -625,7 +625,7 @@ namespace RePKG_Re.Command
                 return;
             }
 
-            Console.WriteLine($"{{\"id\":{JsonConvert.SerializeObject(eventId)},\"type\":\"error\",\"entry\":{JsonConvert.SerializeObject(entryPath)},\"msg\":{JsonConvert.SerializeObject(e.Message)}}}");
+            Console.WriteLine($"{{\"id\":{LegacyJson.QuoteString(eventId)},\"type\":\"error\",\"entry\":{LegacyJson.QuoteString(entryPath)},\"msg\":{LegacyJson.QuoteString(e.Message)}}}");
         }
 
         private void GetProjectInfo(FileInfo packageFile, ref string title, ref string preview)
@@ -637,9 +637,12 @@ namespace RePKG_Re.Command
             if (projectJson.Length == 0 || !projectJson[0].Exists)
                 return;
 
-            var json = JObject.Parse(File.ReadAllText(projectJson[0].FullName));
-            title = (string)json["title"];
-            preview = (string)json["preview"];
+            var json = LegacyJson.Parse(File.ReadAllText(projectJson[0].FullName));
+            if (json is null)
+                return;
+            // 与原 (string)json["title"] 一致:键缺失时一并置空(不要保留传入的默认值)
+            title = LegacyJson.AsString(LegacyJson.GetPropExact(json, "title"));
+            preview = LegacyJson.AsString(LegacyJson.GetPropExact(json, "preview"));
         }
 
         private void GetProjectFolderNameAndPreviewImage(FileInfo packageFile, string defaultProjectName,

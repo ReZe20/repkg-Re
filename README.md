@@ -19,38 +19,92 @@ Feel free to report errors.
 - Dump PKG/TEX info
 
 ### Commands
-- help - shows those commands, use `help "extract"` and `help "info"` to see options for them
+- `--help` (or `-h`, `-?`) - lists the commands; `extract --help`, `info --help` and `batch --help` list the options of one command
+- `--version` - prints the version and the source commit it was built from
 - extract - extracts specified PKG/TEX file, or files from folder
 ```
--o, --output          (Default: ./output) Output directory
--i, --ignoreexts      Don't extract files with specified extensions (delimited by comma ",")
--e, --onlyexts        Only extract files with specified extensions (delimited by comma ",")
--t, --tex             Convert all TEX files into images from specified directory in input
--s, --singledir       Should all extracted files be put in one directory instead of their entry path
--r, --recursive       Recursive search in all subfolders of specified directory
--c, --copyproject     Copy project.json and preview.jpg from beside PKG into output directory
--n, --usename         Use name from project.json as project subfolder name instead of id
---no-tex-convert      Don't convert TEX files into images while extracting PKG
---overwrite           Overwrite all existing files
---lazy                Read entry bytes one at a time instead of loading the whole package
---min-entry-size <KB> Skip entries smaller than this, in KB
---max-entry-size <KB> Skip entries larger than this, in KB
---filter-effect-images <percent>  Skip entries whose converted image is mostly transparent
-                      or black (effect images); value = threshold percent 1-100 (0 = off),
-                      e.g. 85 = skip when transparent OR black ratio >= 85%
---onlypaths           Only extract entries under the given directory prefix(es), comma-delimited;
-                      subfolders included (e.g. materials or materials/masks); \ and / both accepted
---ignorepaths         Don't extract entries under the given directory prefix(es), comma-delimited
---paths-depth <N>     Limit directory filtering depth (1 = direct files only, 0 = unlimited, default)
--p, --only-tex-images Only save the image a TEX converts into, skip raw .tex and .tex-json
--I, --output-ignoreexts  Don't write output files with these extensions (converted images are
-                      judged by their converted format, e.g. .png; raw files by their own extension)
--E, --output-onlyexts    Only write output files with these extensions (same judgement as -I)
+-o, --output <DIR>        Output directory (default: ./output)
+-i, --ignoreexts <EXTS>   Don't extract files with these extensions (comma-delimited)
+-e, --onlyexts <EXTS>     Only extract files with these extensions (comma-delimited)
+-t, --tex                 Convert all TEX files into images from the directory given as input
+-s, --singledir           Put all extracted files in one directory instead of their entry path
+-r, --recursive           Search all subfolders of the specified directory
+-c, --copyproject         Copy project.json and preview.jpg from beside the PKG into output
+-n, --usename             Use the title in project.json as the subfolder name instead of the id
+--no-tex-convert          Don't convert TEX files into images while extracting PKG
+-p, --only-tex-images     Skip raw .tex output, keep only converted images (the .tex-json sidecar
+                          is still written)
+-I, --output-ignoreexts   Don't write files with these extensions. Output-level filter: entries are
+                          still parsed and TEX still converted, only the write is skipped; a
+                          converted TEX image is judged by the format it converted into (.png/.jpg),
+                          a raw entry by its own extension
+-E, --output-onlyexts     Only write files with these extensions (judged the same way as -I)
+--filter-effect-images <PERCENT>
+                          Skip entries whose converted image is mostly transparent or black
+                          (typical effect sprites); threshold percent 1-100, 0 = off, e.g. 85 = skip
+                          when the transparent OR black ratio is >= 85%
+--onlypaths <PREFIXES>    Only extract entries under these directory prefixes (comma-delimited,
+                          subfolders included, both \ and / accepted; e.g. materials, materials/masks)
+--ignorepaths <PREFIXES>  Don't extract entries under these directory prefixes (same syntax)
+--paths-depth <N>         Limit --onlypaths/--ignorepaths to N path segments after the prefix
+                          (1 = direct children only, subfolders excluded; 0 = unlimited, default)
+--overwrite               Overwrite all existing files
+--lazy                    Read entry bytes one at a time instead of loading the whole package
+--max-entry-size <KB>     Skip entries larger than this, in KB
+--min-entry-size <KB>     Skip entries smaller than this, in KB
 ```
-- batch - Extracts multiple wallpapers from a manifest file in one process
+- info - Dumps PKG/TEX info
+```
+-s, --sort                Sort entries a-z
+-b, --sortby <KEY>        Sort entries by name, extension or size (default: name; an unrecognized
+                          value falls back to name)
+-t, --tex                 Dump info about all TEX files from the directory given as input
+-p, --projectinfo <KEYS>  Keys to dump from project.json (comma-delimited, * for all)
+-e, --printentries        Print entries in packages
+--title-filter <TEXT>     Only list packages whose project.json title contains this text
+                          (case-insensitive)
+```
+- batch - extracts many wallpapers in one process, driven by a JSON manifest
 ```
 repkg batch --manifest manifest.json [--threads 8]
 ```
+`--threads` overrides the manifest `threads`; when it is 0 the manifest value is used, and when that
+is 0 as well the worker count falls back to the physical core count (hyper-threading adds no
+throughput here and doubles memory). Failures never stop a batch: each one is reported as a JSON
+event on stdout and the next wallpaper is started. A finished batch always exits 0; only a missing
+or invalid manifest exits 1.
+
+Progress is reported as one JSON object per line on stdout (wallpaper start/done, entry, error,
+batch done); the batch continues on errors and always exits 0 unless the manifest is invalid.
+
+#### Manifest schema
+
+Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are the same key).
+
+| Key | Type | Default | Meaning | CLI equivalent |
+| --- | --- | --- | --- | --- |
+| `threads` | int | 0 | worker threads, 0 = physical core count | `--threads` (wins over this) |
+| `wallpapers` | array | - | jobs, one item per wallpaper; required | - |
+| `wallpapers[].id` | string | - | echoed back in every event of this wallpaper | - |
+| `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them | `<input>` |
+| `wallpapers[].output` | string | - | output directory for this wallpaper | `--output` |
+| `options.overwrite` | bool | false | overwrite existing files | `--overwrite` |
+| `options.onlypaths` | string[] | none | directory prefixes to keep | `--onlypaths` |
+| `options.ignorepaths` | string[] | none | directory prefixes to drop | `--ignorepaths` |
+| `options.pathsDepth` | int | 0 | depth limit for the two above | `--paths-depth` |
+| `options.onlyexts` | string[] | none | extract-level extension filter | `--onlyexts` |
+| `options.ignoreexts` | string[] | none | extract-level extension filter | `--ignoreexts` |
+| `options.outputOnlyExts` | string[] | none | write-level extension filter | `--output-onlyexts` |
+| `options.outputIgnoreExts` | string[] | none | write-level extension filter | `--output-ignoreexts` |
+| `options.keepSubfolderStructure` | bool | false | drives `--singledir` directly, so `true` flattens the entry paths into one directory - the key name says the opposite of what it does and is kept for compatibility | `-s, --singledir` |
+| `options.noTexConvert` | bool | false | don't convert TEX to images | `--no-tex-convert` |
+| `options.onlyTexImages` | bool | false | skip raw `.tex` writes | `-p, --only-tex-images` |
+| `options.filterEffectImages` | int | 0 | read as an integer percent | `--filter-effect-images` |
+
+Not expressible in a manifest: `--tex`, `--recursive`, `--usename`, `--copyproject`,
+`--min-entry-size`, `--max-entry-size` (no manifest key exists for them), and `--lazy` - the batch
+executor already reads entries on demand, so the flag is forced off (`BatchManifest.cs`).
+
 Manifest format (0 = physical core count for threads; options match extract):
 ```
 {
@@ -60,17 +114,6 @@ Manifest format (0 = physical core count for threads; options match extract):
   ],
   "options": { "overwrite": true, "onlypaths": ["materials"], "filterEffectImages": 85 }
 }
-```
-Progress is reported as one JSON object per line on stdout (wallpaper start/done, entry, error,
-batch done); the batch continues on errors and always exits 0 unless the manifest is invalid.
-- info - Dumps PKG/TEX info
-```
--s, --sort             Sort entries a-z
--b, --sortby           (Default: name) Sort by ... (available options: name, extension, size)
--t, --tex              Dump info about all TEX files from specified directory
--p, --projectinfo      Keys to dump from project.json (delimit using comma) (* for all)
--e, --printentries     Print entries in packages
---title-filter         Title filter
 ```
  
 ### Examples

@@ -8,8 +8,10 @@ namespace RePKG_Re.Cli
     /// System.CommandLine 2.0 命令树定义(2026-09-09 AOT 迁移,替代 CommandLineParser 2.9.1)。
     /// 选项名/短名/默认值 与旧特性 1:1 对照(WE Tool 传参面禁改);
     /// handler 只负责把 ParseResult 组装成 Options DTO 并调用既有 Action,业务逻辑零改动。
-    /// 默认值语义:Option 不设默认值,缺省时 GetValue 返回 null/0,由 handler 的 ?? 兜底
-    /// (OutputDirectory/./output、SortBy/"name" 等,与旧 [Option Default] 一一对应)。
+    /// 默认值语义:一律由 handler 的 ?? 兜底(OutputDirectory/./output、SortBy/"name" 等,与旧
+    /// [Option Default] 一一对应);其中 ./output 与 name 两处**另外**声明了 DefaultValueFactory,
+    /// 因为 help 只在选项带默认值工厂时才打印 (DEFAULT: ...) —— 同一个值写两处,改动必须同步。
+    /// helpName 只影响帮助里 &lt;...&gt; 占位符的显示单位,不参与解析。
     /// </summary>
     internal static class CliBuilder
     {
@@ -26,47 +28,42 @@ namespace RePKG_Re.Cli
 
         private static System.CommandLine.Command BuildExtract()
         {
-            var cmd = new System.CommandLine.Command("extract", "Extract PKG/Convert TEX into image.");
+            var cmd = new System.CommandLine.Command("extract", "Extract PKG files or convert TEX files into images");
 
-            var input = new Argument<string>("input") { Description = "Path to file/directory" };
+            var input = new Argument<string>("input") { Description = "Path to a PKG/TEX file, or to a directory" };
             cmd.Add(input);
 
-            var output = Opt<string>("--output", "-o", "Output directory");
+            var output = Opt<string>("--output", "-o", "Output directory", "DIR");
+            // 默认值必须声明在这里,help 才会打印 (DEFAULT: ...);handler 里的 ?? 兜底保留,两处取值必须一致
+            output.DefaultValueFactory = _ => "./output";
             var ignoreExts = Opt<string>("--ignoreexts", "-i",
-                "Don't extract files with specified extensions (delimited by comma \",\")");
+                "Don't extract files with these extensions (comma-delimited)", "EXTS");
             var onlyExts = Opt<string>("--onlyexts", "-e",
-                "Only extract files with specified extensions (delimited by comma \",\")");
+                "Only extract files with these extensions (comma-delimited)", "EXTS");
             var outputIgnoreExts = Opt<string>("--output-ignoreexts", "-I",
-                "Don't write files with specified extensions (delimited by comma \",\"). " +
-                "Output-level filter: entries are still parsed (TEX converted), skipped when writing. " +
-                "TEX converted images are judged by their converted extension.");
+                "Don't write files with these extensions (parsing and TEX conversion still run)", "EXTS");
             var outputOnlyExts = Opt<string>("--output-onlyexts", "-E",
-                "Only write files with specified extensions (delimited by comma \",\"). " +
-                "Output-level filter: entries are still parsed (TEX converted), skipped when writing. " +
-                "TEX converted images are judged by their converted extension.");
-            var tex = Flag("--tex", "-t", "Convert all tex files into images from specified directory in input");
-            var singleDir = Flag("--singledir", "-s", "Should all extracted files be put in one directory instead of their entry path");
-            var recursive = Flag("--recursive", "-r", "Recursive search in all subfolders of specified directory");
-            var copyProject = Flag("--copyproject", "-c", "Copy project.json and preview.jpg from beside PKG into output directory");
-            var useName = Flag("--usename", "-n", "Use name from project.json as project subfolder name instead of id");
+                "Only write files with these extensions (parsing and TEX conversion still run)", "EXTS");
+            var tex = Flag("--tex", "-t", "Convert all TEX files into images from the directory given as input");
+            var singleDir = Flag("--singledir", "-s", "Put all extracted files in one directory instead of their entry path");
+            var recursive = Flag("--recursive", "-r", "Search all subfolders of the specified directory");
+            var copyProject = Flag("--copyproject", "-c", "Copy project.json and preview.jpg from beside the PKG into output");
+            var useName = Flag("--usename", "-n", "Use the title in project.json as the subfolder name instead of the id");
             var noTexConvert = Flag("--no-tex-convert", null, "Don't convert TEX files into images while extracting PKG");
-            var onlyTexImages = Flag("--only-tex-images", "-p", "Only output converted TEX images; skip saving raw .tex files");
+            var onlyTexImages = Flag("--only-tex-images", "-p",
+                "Skip raw .tex output, keep only converted images (.tex-json still written)");
             var filterEffectImages = Opt<double>("--filter-effect-images", null,
-                "Skip entries whose converted image is mostly transparent or black (effect images). " +
-                "Value = threshold percent (1-100), e.g. 85 = skip when transparent OR black ratio >= 85%. 0 = off");
+                "Skip entries whose converted image is mostly transparent or black (threshold 1-100, 0 = off)", "PERCENT");
             var onlyPaths = Opt<string>("--onlypaths", null,
-                "Only extract entries under the specified directory prefix(es) (delimited by comma \",\", " +
-                "e.g. materials or materials/masks). Subfolders included; \\\\ and / both accepted");
+                "Only extract entries under these directory prefixes (comma-delimited, subfolders included)", "PREFIXES");
             var ignorePaths = Opt<string>("--ignorepaths", null,
-                "Don't extract entries under the specified directory prefix(es) (delimited by comma \",\", " +
-                "e.g. effects,sounds). Subfolders included; \\\\ and / both accepted");
+                "Don't extract entries under these directory prefixes (comma-delimited, subfolders included)", "PREFIXES");
             var pathsDepth = Opt<int>("--paths-depth", null,
-                "Limit --onlypaths/--ignorepaths to N path segments after the prefix " +
-                "(1 = direct children only, subfolders excluded). 0 = unlimited (default)");
+                "Limit --onlypaths/--ignorepaths to N segments below the prefix (1 = direct children, 0 = unlimited)", "N");
             var overwrite = Flag("--overwrite", null, "Overwrite all existing files");
-            var lazy = Flag("--lazy", null, "Lazy/chunked mode: read entries one by one instead of loading all into memory");
-            var maxEntrySize = Opt<long>("--max-entry-size", null, "Skip entries larger than specified size (KB)");
-            var minEntrySize = Opt<long>("--min-entry-size", null, "Skip entries smaller than specified size (KB)");
+            var lazy = Flag("--lazy", null, "Read entries one by one instead of loading the whole package into memory");
+            var maxEntrySize = Opt<long>("--max-entry-size", null, "Skip entries larger than this size in KB", "KB");
+            var minEntrySize = Opt<long>("--min-entry-size", null, "Skip entries smaller than this size in KB", "KB");
 
             cmd.Add(output);
             cmd.Add(ignoreExts);
@@ -123,17 +120,22 @@ namespace RePKG_Re.Cli
 
         private static System.CommandLine.Command BuildInfo()
         {
-            var cmd = new System.CommandLine.Command("info", "Dumps PKG/TEX info.");
+            var cmd = new System.CommandLine.Command("info", "Dump PKG/TEX info");
 
-            var input = new Argument<string>("input") { Description = "Path to file which you want to get info about" };
+            var input = new Argument<string>("input") { Description = "Path to the file or directory to inspect" };
             cmd.Add(input);
 
             var sort = Flag("--sort", "-s", "Sort entries a-z");
-            var sortBy = Opt<string>("--sortby", "-b", "Sort by ... (available options: name, extension, size)");
-            var tex = Flag("--tex", "-t", "Dump info about all tex files from specified directory");
-            var projectInfo = Opt<string>("--projectinfo", "-p", "Keys to dump from project.json (delimit using comma) (* for all)");
+            var sortBy = Opt<string>("--sortby", "-b",
+                "Sort entries by name, extension or size (unrecognized values fall back to name)", "KEY");
+            // 同上:默认值要声明出来 help 才看得见,handler 的 ?? "name" 保留
+            sortBy.DefaultValueFactory = _ => "name";
+            var tex = Flag("--tex", "-t", "Dump info about all TEX files from the directory given as input");
+            var projectInfo = Opt<string>("--projectinfo", "-p",
+                "Keys to dump from project.json (comma-delimited, * for all)", "KEYS");
             var printEntries = Flag("--printentries", "-e", "Print entries in packages");
-            var titleFilter = Opt<string>("--title-filter", null, "Title filter");
+            var titleFilter = Opt<string>("--title-filter", null,
+                "Only list packages whose project.json title contains this text (case-insensitive)", "TEXT");
 
             cmd.Add(sort);
             cmd.Add(sortBy);
@@ -163,15 +165,19 @@ namespace RePKG_Re.Cli
         private static System.CommandLine.Command BuildBatch()
         {
             var cmd = new System.CommandLine.Command("batch",
-                "Extract multiple wallpapers from a manifest file. Errors are reported as JSON events; the batch continues.");
+                "Extract wallpapers listed in a manifest file; errors are reported as JSON events and the batch continues");
 
             var manifest = new Option<string>("--manifest", new[] { "-m" })
             {
-                Description = "Path to manifest JSON file",
-                Required = true
+                Description = "Path to the manifest JSON file (schema: README, section batch)",
+                Required = true,
+                HelpName = "FILE"
             };
             cmd.Add(manifest);
-            var threads = Opt<int>("--threads", "-t", "Max worker threads (0 = CPU core count)");
+            // 原描述"0 = CPU core count"与实现不符:0 是"沿用 manifest 里的 threads",
+            // 两处都为 0 才取物理核数(Batch.cs:39),且命令行优先于 manifest
+            var threads = Opt<int>("--threads", "-t",
+                "Max worker threads; overrides the manifest value (0 = follow the manifest)", "N");
             cmd.Add(threads);
 
             cmd.SetAction(pr =>
@@ -188,13 +194,16 @@ namespace RePKG_Re.Cli
         }
 
         // ---- 选项构建辅助(统一短名别名/描述;默认值由 handler ?? 兜底) ----
-
-        private static Option<T> Opt<T>(string name, string alias, string description)
+        // helpName:帮助里 <...> 占位符写的单位(默认会复读选项名,--max-entry-size <max-entry-size> 那种),
+        // 只给带值的选项设;开关(bool)不显示占位符,一律传 null。
+        private static Option<T> Opt<T>(string name, string alias, string description, string helpName = null)
         {
-            return new Option<T>(name, alias == null ? Array.Empty<string>() : new[] { alias })
+            var opt = new Option<T>(name, alias == null ? Array.Empty<string>() : new[] { alias })
             {
                 Description = description
             };
+            if (helpName != null) opt.HelpName = helpName;
+            return opt;
         }
 
         private static Option<bool> Flag(string name, string alias, string description)

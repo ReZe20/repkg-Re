@@ -210,7 +210,7 @@ namespace RePKG_Re.Tests
         }
 
         /// <summary>
-        /// README「Manifest schema」那张表的守门用例:12 个 options 键一次填满,逐字段断言映射结果,
+        /// README「Manifest schema」那张表的守门用例:顶层键 + 15 个 options 键一次填满,逐字段断言映射结果,
         /// 并断言 manifest 无法表达的那几个必须保持关闭。表里任何一格与代码分叉(改名、漏映射、
         /// 默认值变了),这里就红。
         /// </summary>
@@ -221,7 +221,7 @@ namespace RePKG_Re.Tests
             // 手写 JSON 而不是序列化匿名对象:测试里出现的键名就是线上格式
             File.WriteAllText(path, @"{
   ""threads"": 3,
-  ""wallpapers"": [ { ""id"": ""W1"", ""input"": ""C:/in"", ""output"": ""C:/out"" } ],
+  ""wallpapers"": [ { ""id"": ""W1"", ""input"": ""C:/in"", ""output"": ""C:/out"", ""outputName"": ""My Wallpaper"" } ],
   ""options"": {
     ""overwrite"": true,
     ""onlypaths"": [ ""materials"", ""sounds/ambient"" ],
@@ -234,13 +234,17 @@ namespace RePKG_Re.Tests
     ""keepSubfolderStructure"": true,
     ""noTexConvert"": true,
     ""onlyTexImages"": true,
-    ""filterEffectImages"": 85
+    ""filterEffectImages"": 85,
+    ""mpkgMagic"": ""PKGM0016"",
+    ""keepAudio"": true,
+    ""noLz4"": true
   }
 }");
 
             var manifest = BatchManifest.Load(path);
             Assert.That(manifest.Threads, Is.EqualTo(3));
             Assert.That(manifest.Wallpapers[0].Id, Is.EqualTo("W1"));
+            Assert.That(manifest.Wallpapers[0].OutputName, Is.EqualTo("My Wallpaper"));
 
             var o = manifest.ToExtractOptions();
             Assert.That(o.Overwrite, Is.True);
@@ -256,6 +260,12 @@ namespace RePKG_Re.Tests
             Assert.That(o.NoTexConvert, Is.True);
             Assert.That(o.OnlyTexImages, Is.True);
             Assert.That(o.FilterEffectImages, Is.EqualTo(85.0));
+
+            // mpkg 那三个键的取反关系最容易写反:keepAudio → !DropAudio,noLz4 → !UseLz4
+            var mobile = manifest.ToMobileOptions();
+            Assert.That(mobile.Magic, Is.EqualTo("PKGM0016"));
+            Assert.That(mobile.DropAudio, Is.False);
+            Assert.That(mobile.UseLz4, Is.False);
 
             // manifest 表达不了的选项:batch 自己接管,映射结果必须是关闭/空
             Assert.That(o.Lazy, Is.False);            // 执行器本就按需读取条目
@@ -275,13 +285,14 @@ namespace RePKG_Re.Tests
             var path = Path.Combine(_tempDir, "case.json");
             File.WriteAllText(path, @"{
   ""Threads"": 2,
-  ""Wallpapers"": [ { ""Id"": ""A"", ""Input"": ""C:/in"", ""Output"": ""C:/out"" } ],
+  ""Wallpapers"": [ { ""Id"": ""A"", ""Input"": ""C:/in"", ""Output"": ""C:/out"", ""OutputName"": ""N"" } ],
   ""Options"": { ""PathsDepth"": 1, ""OnlyPaths"": [ ""materials"" ], ""KeepSubfolderStructure"": true }
 }");
 
             var manifest = BatchManifest.Load(path);
             Assert.That(manifest.Threads, Is.EqualTo(2));
             Assert.That(manifest.Wallpapers[0].Id, Is.EqualTo("A"));
+            Assert.That(manifest.Wallpapers[0].OutputName, Is.EqualTo("N"));
 
             var o = manifest.ToExtractOptions();
             Assert.That(o.PathsDepth, Is.EqualTo(1));
@@ -374,6 +385,41 @@ namespace RePKG_Re.Tests
             Assert.That(events.Any(e => e.Type == "error"), Is.False);
             Assert.That(ListFiles(out1), Is.EquivalentTo(new[] { "txt/a.txt" }));
             Assert.That(ListFiles(out2), Is.EquivalentTo(new[] { "txt/b.txt" }));
+        }
+
+        /// <summary>
+        /// mode=mpkg 的 wallpapers[].outputName:文件名主干由调用方给(壁纸标题或工坊 ID),
+        /// repkg 负责清洗非法文件名字符;一个壁纸拆出多个包时缀上源包名,免得几个包写进同一个文件。
+        /// </summary>
+        [Test]
+        public void Batch_Mpkg_RespectsOutputName_And_DisambiguatesMultiplePackages()
+        {
+            var one = Path.Combine(_tempDir, "wp1");
+            var many = Path.Combine(_tempDir, "wp2");
+            Directory.CreateDirectory(one);
+            Directory.CreateDirectory(many);
+            WritePkg(Path.Combine(one, "scene.pkg"), ("scene.json", Encoding.ASCII.GetBytes("{}")));
+            WritePkg(Path.Combine(many, "scene.pkg"), ("scene.json", Encoding.ASCII.GetBytes("{}")));
+            WritePkg(Path.Combine(many, "extra.pkg"), ("scene.json", Encoding.ASCII.GetBytes("{}")));
+
+            var outOne = Path.Combine(_tempDir, "o1");
+            var outMany = Path.Combine(_tempDir, "o2");
+            var manifestPath = Path.Combine(_tempDir, "mpkg-name.json");
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(new
+            {
+                mode = "mpkg",
+                threads = 1,
+                wallpapers = new object[]
+                {
+                    new { id = "1", input = one, output = outOne, outputName = "2636878454" },
+                    new { id = "2", input = many, output = outMany, outputName = "A:B?C" }
+                }
+            }));
+
+            var events = RunBatchAndCapture(manifestPath);
+            Assert.That(events.Exists(e => e.Type == "error"), Is.False);
+            Assert.That(ListFiles(outOne), Is.EquivalentTo(new[] { "2636878454.mpkg" }));
+            Assert.That(ListFiles(outMany), Is.EquivalentTo(new[] { "A_B_C_scene.mpkg", "A_B_C_extra.mpkg" }));
         }
 
         [Test]

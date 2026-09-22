@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Json;
 
 namespace RePKG_Re.Command
@@ -15,6 +16,11 @@ namespace RePKG_Re.Command
     {
         /// <summary>最大线程数(0 = CPU 核心数;Phase 1 生效)</summary>
         public int Threads { get; set; }
+
+        /// <summary>"extract"(默认,拆包成文件) | "mpkg"(整包转移动包)。二者执行器不同。</summary>
+        public string Mode { get; set; }
+
+        public bool IsMpkg => string.Equals(Mode, "mpkg", StringComparison.OrdinalIgnoreCase);
 
         public List<BatchWallpaper> Wallpapers { get; set; }
 
@@ -56,6 +62,7 @@ namespace RePKG_Re.Command
             var manifest = new BatchManifest
             {
                 Threads = LegacyJson.AsInt(GetProp(root, "threads")) ?? 0,
+                Mode = LegacyJson.AsString(GetProp(root, "mode")),
                 Wallpapers = new List<BatchWallpaper>(),
                 Options = null
             };
@@ -68,7 +75,8 @@ namespace RePKG_Re.Command
                     {
                         Id = LegacyJson.AsString(GetProp(item, "id")),
                         Input = LegacyJson.AsString(GetProp(item, "input")),
-                        Output = LegacyJson.AsString(GetProp(item, "output"))
+                        Output = LegacyJson.AsString(GetProp(item, "output")),
+                        OutputName = LegacyJson.AsString(GetProp(item, "outputName"))
                     });
                 }
             }
@@ -88,7 +96,10 @@ namespace RePKG_Re.Command
                     KeepSubfolderStructure = LegacyJson.AsBool(GetProp(o, "keepSubfolderStructure")) ?? false,
                     NoTexConvert = LegacyJson.AsBool(GetProp(o, "noTexConvert")) ?? false,
                     OnlyTexImages = LegacyJson.AsBool(GetProp(o, "onlyTexImages")) ?? false,
-                    FilterEffectImages = LegacyJson.AsInt(GetProp(o, "filterEffectImages")) ?? 0
+                    FilterEffectImages = LegacyJson.AsInt(GetProp(o, "filterEffectImages")) ?? 0,
+                    MpkgMagic = LegacyJson.AsString(GetProp(o, "mpkgMagic")),
+                    KeepAudio = LegacyJson.AsBool(GetProp(o, "keepAudio")) ?? false,
+                    NoLz4 = LegacyJson.AsBool(GetProp(o, "noLz4")) ?? false
                 };
             }
 
@@ -99,6 +110,12 @@ namespace RePKG_Re.Command
 
         private void Validate()
         {
+            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !Mode.Equals("extract", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg)");
+                Environment.Exit(1);
+            }
+
             if (Threads < 0)
             {
                 Console.Error.WriteLine("Invalid manifest: threads must be >= 0");
@@ -144,6 +161,18 @@ namespace RePKG_Re.Command
             };
         }
 
+        /// <summary>manifest 选项 → 转包选项。project.json/preview.gif 由 runner 按每个包的位置单独填。</summary>
+        public MobilePackageOptions ToMobileOptions()
+        {
+            var o = Options ?? new BatchOptionsModel();
+            return new MobilePackageOptions
+            {
+                Magic = string.IsNullOrWhiteSpace(o.MpkgMagic) ? "PKGM0019" : o.MpkgMagic,
+                DropAudio = !o.KeepAudio,
+                UseLz4 = !o.NoLz4
+            };
+        }
+
         private static string Join(string[] array)
             => array == null || array.Length == 0 ? null : string.Join(",", array);
     }
@@ -160,6 +189,12 @@ namespace RePKG_Re.Command
         public string Input { get; set; }
 
         public string Output { get; set; }
+
+        /// <summary>
+        /// 仅 mode = "mpkg" 生效:输出 .mpkg 的文件名主干(不含扩展名),让调用方按壁纸标题或创意工坊 ID 命名。
+        /// 留空 = 用源包文件名。非法文件名字符由 repkg 清洗,不假定调用方 sanitize 过。
+        /// </summary>
+        public string OutputName { get; set; }
     }
 
     /// <summary>manifest 全局提取选项(映射到 ExtractOptions 的过滤/输出开关)。</summary>
@@ -199,5 +234,16 @@ namespace RePKG_Re.Command
 
         /// <summary>--filter-effect-images(0 = 关,1-100 = 阈值)</summary>
         public int FilterEffectImages { get; set; }
+
+        // ---------- 以下仅 mode = "mpkg" 生效 ----------
+
+        /// <summary>输出包魔数;留空 = PKGM0019(真机也接受 PKGM0016,WE 自己两种都发)</summary>
+        public string MpkgMagic { get; set; }
+
+        /// <summary>true = 保留 sounds/*.mp3。默认丢弃:移动端不消费壁纸音频(2/2 真机复现)</summary>
+        public bool KeepAudio { get; set; }
+
+        /// <summary>true = 物化出的 RGBA8 不试 LZ4(排查压缩侧问题时用)</summary>
+        public bool NoLz4 { get; set; }
     }
 }

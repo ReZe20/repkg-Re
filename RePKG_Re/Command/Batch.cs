@@ -40,6 +40,16 @@ namespace RePKG_Re.Command
                 : manifest.Threads > 0 ? manifest.Threads
                 : ProcessorInfo.GetPhysicalProcessorCount(); // 物理核数:超线程无吞吐收益,只翻倍内存
 
+            if (manifest.IsMpkg)
+            {
+                // 打包走独立执行器:输出是单个 mpkg 文件,条目必须按表序单遍写+回填,不能进全局条目队列。
+                // 壁纸级并发上限由 MpkgRunner 自己收(物化单条上限 250MB,不能按核数放大)。
+                new MpkgRunner(manifest.ToMobileOptions(), manifest.Wallpapers, threads,
+                    manifest.Options?.Overwrite ?? false).Run();
+                Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
+                return;
+            }
+
             var ctx = new ExtractContext(manifest.ToExtractOptions());
             var runner = new BatchRunner(ctx, manifest.Wallpapers, threads);
             runner.Run();

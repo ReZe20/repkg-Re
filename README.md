@@ -64,7 +64,8 @@ Feel free to report errors.
 --title-filter <TEXT>     Only list packages whose project.json title contains this text
                           (case-insensitive)
 ```
-- batch - extracts many wallpapers in one process, driven by a JSON manifest
+- batch - runs many wallpapers in one process, driven by a JSON manifest; `mode` selects unpacking
+  them to files (`extract`) or rewriting them as mobile packages (`mpkg`)
 ```
 repkg batch --manifest manifest.json [--threads 8]
 ```
@@ -83,11 +84,13 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 
 | Key | Type | Default | Meaning | CLI equivalent |
 | --- | --- | --- | --- | --- |
+| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg` (see below) | - |
 | `threads` | int | 0 | worker threads, 0 = physical core count | `--threads` (wins over this) |
 | `wallpapers` | array | - | jobs, one item per wallpaper; required | - |
 | `wallpapers[].id` | string | - | echoed back in every event of this wallpaper | - |
 | `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them | `<input>` |
 | `wallpapers[].output` | string | - | output directory for this wallpaper | `--output` |
+| `wallpapers[].outputName` | string | source package name | `mode: mpkg` only - file name (without extension) of the produced `.mpkg`; invalid characters are replaced with `_`, and a wallpaper that yields several packages gets `_<source-name>` appended so they don't overwrite each other | - |
 | `options.overwrite` | bool | false | overwrite existing files | `--overwrite` |
 | `options.onlypaths` | string[] | none | directory prefixes to keep | `--onlypaths` |
 | `options.ignorepaths` | string[] | none | directory prefixes to drop | `--ignorepaths` |
@@ -100,6 +103,38 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.noTexConvert` | bool | false | don't convert TEX to images | `--no-tex-convert` |
 | `options.onlyTexImages` | bool | false | skip raw `.tex` writes | `-p, --only-tex-images` |
 | `options.filterEffectImages` | int | 0 | read as an integer percent | `--filter-effect-images` |
+| `options.mpkgMagic` | string | `PKGM0019` | `mode: mpkg` only - magic written into the output package | - |
+| `options.keepAudio` | bool | false | `mode: mpkg` only - keep `sounds/*.mp3` instead of dropping them | - |
+| `options.noLz4` | bool | false | `mode: mpkg` only - don't try to LZ4-compress materialized pixels | - |
+
+#### mode: "mpkg" - converting a PC package into a mobile one
+
+```
+{ "mode": "mpkg", "wallpapers": [ { "id": "1", "input": "C:/.../431960/123/scene.pkg", "output": "C:/out" } ] }
+```
+
+Each `.pkg`/`.mpkg` input becomes `<output>/<same-name>.mpkg`, or `<output>/<outputName>.mpkg` when the
+job carries that key (callers typically pass the wallpaper title or the workshop id). The entry table is
+rebuilt, the magic becomes `mpkgMagic`, and `project.json` / the preview image are embedded from the files
+sitting next to the input package (a package that already carries them keeps its own copies).
+
+Per entry, exactly one of two things happens:
+
+- a texture whose payload is a **passthrough encoded image** (TEX container `imageFormat != FIF_UNKNOWN`,
+  i.e. the pixels are stored as a PNG/JPEG blob) is decoded to raw RGBA8 - straight alpha, one mip,
+  `TEXB0004` with `imageFormat = FIF_UNKNOWN`, and LZ4 when that actually shrinks the payload. Mobile
+  reads such an entry as `width*height*4` raw bytes, so a passthrough blob renders as garbage.
+- **everything else is copied byte for byte**, including DXT1/3/5 textures with their full mip chains,
+  R8/RG88 masks, video textures (an mp4 embedded in a `.tex`), models, shaders and JSON. Textures the
+  reader cannot parse are copied as well, so an unknown format never blocks a conversion.
+
+`mode: mpkg` runs one package at a time and caps wallpaper concurrency at 2: packing writes a single
+output file, so entries cannot be spread over workers, and one materialized 8K texture alone can need
+~230 MB of pixel buffer.
+
+The conversion is deliberately faithful rather than small: it never rescales a texture, so an output
+package is typically about twice the size of a Wallpaper Engine export made with a reduced quality
+setting (which halves every texture and re-encodes them).
 
 Not expressible in a manifest: `--tex`, `--recursive`, `--usename`, `--copyproject`,
 `--min-entry-size`, `--max-entry-size` (no manifest key exists for them), and `--lazy` - the batch

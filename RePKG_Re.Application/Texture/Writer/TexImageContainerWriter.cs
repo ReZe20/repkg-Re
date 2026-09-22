@@ -22,14 +22,23 @@ namespace RePKG_Re.Application.Texture
             writer.WriteNString(imageContainer.Magic);
             writer.Write(imageContainer.Images.Count);
 
-            switch (imageContainer.ImageContainerVersion)
+            // 尾部字段按魔数决定，不能按 ImageContainerVersion：读侧把 TEXB0004+非 MP4 降级成
+            // Version3 的 mip 记录，但 Magic 仍是 "TEXB0004"。若按版本分支，读进来的包再写出去
+            // 就少写一个 int32，整条 TEX 从 mip 起错位。
+            switch (imageContainer.Magic)
             {
-                case TexImageContainerVersion.Version1:
-                case TexImageContainerVersion.Version2:
+                case "TEXB0001":
+                case "TEXB0002":
                     break;
 
-                case TexImageContainerVersion.Version3:
+                case "TEXB0003":
                     writer.Write((int) imageContainer.ImageFormat);
+                    break;
+
+                case "TEXB0004":
+                    writer.Write((int) imageContainer.ImageFormat);
+                    // isVideoMp4 不再单独存字段，读侧是从 ImageFormat==FIF_MP4 反推的，这里正向推回去
+                    writer.Write(imageContainer.ImageFormat == FreeImageFormat.FIF_MP4 ? 1 : 0);
                     break;
 
                 default:

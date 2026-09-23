@@ -35,7 +35,7 @@ namespace RePKG_Re.Application.Texture
             }
         }
 
-        public ITex ReadFrom(BinaryReader reader)
+        public ITex ReadFrom(BinaryReader reader, bool readPixels = true, int onlyImage = -1)
         {
             if (reader == null) throw new ArgumentNullException(nameof(reader));
 
@@ -50,7 +50,7 @@ namespace RePKG_Re.Application.Texture
                 throw new UnknownMagicException(nameof(TexReader), nameof(tex.Magic2), tex.Magic2);
 
             tex.Header = _texHeaderReader.ReadFrom(reader);
-            tex.ImagesContainer = _texImageContainerReader.ReadFrom(reader, tex.Header.Format);
+            tex.ImagesContainer = _texImageContainerReader.ReadFrom(reader, tex.Header.Format, readPixels, onlyImage);
 
             if (tex.IsGif)
                 tex.FrameInfoContainer = _texFrameInfoContainerReader.ReadFrom(reader);

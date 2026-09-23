@@ -18,6 +18,23 @@ namespace RePKG_Re.Application.Package
         /// <summary>物化出的 RGBA8 是否尝试 LZ4（逐条目择优，压不小就写 lz=0）</summary>
         public bool UseLz4 { get; set; } = true;
 
+        /// <summary>
+        /// 纹理缩小除数，1/2/4 对应 WE "纹理缩小"下拉的 原始/2×/4×。
+        /// N&gt;1 时除了缩像素，还要往 scene.json 的 general 块里写 "texturereduction" : N —— WE 就是这么发的。
+        /// </summary>
+        public int Reduction { get; set; } = 1;
+
+        /// <summary>
+        /// 缩小过的物化纹理发 ETC2 RGBA8(fmt5，1 字节/像素)而不是 RGBA8。Reduction=1 时无条件忽略。
+        /// </summary>
+        public bool EncodeEtc2 { get; set; }
+
+        /// <summary>
+        /// 着色器源码做 GLSL→GLSL ES 兼容改写（整数字面量落在 float 上下文时补 ".0"）。
+        /// 移动端编译失败会让那一层材质回退成基础贴图，画出来是一块白。
+        /// </summary>
+        public bool ShaderCompat { get; set; } = true;
+
         /// <summary>同级 loose project.json 路径；包内已有同名条目时忽略</summary>
         public string ProjectJsonPath { get; set; }
 
@@ -31,9 +48,30 @@ namespace RePKG_Re.Application.Package
         public int Materialized { get; set; }
         public int Copied { get; set; }
         public int Dropped { get; set; }
+
+        /// <summary>被缩小写出的是哪些条目:计数 + 有没有把键写进 scene.json</summary>
+        public int Reduced { get; set; }
+        public bool ReductionRecorded { get; set; }
+
+        /// <summary>物化后发 ETC2(fmt5)的条目数</summary>
+        public int Etc2Encoded { get; set; }
+
+        /// <summary>像素被缩过、因此帧表也跟着缩过的动图条目数</summary>
+        public int FramesScaled { get; set; }
+
+        /// <summary>做过 GLSL→GLSL ES 兼容改写的着色器条目数 / 补上的整数字面量数</summary>
+        public int ShadersRewritten { get; set; }
+        public int ShaderLiterals { get; set; }
         public long InputBytes { get; set; }
         public long OutputBytes { get; set; }
+        /// <summary>
+        /// "该做的没做成"：调用方（MpkgRunner）按错误处理，逐条发 error 事件、前端计入 ErrorCount。
+        /// 例行播报不要放这里 —— 这个列表的语义就是"每一条都是错"，塞别的东西会让一次成功转化看起来像失败。
+        /// </summary>
         public List<string> Warnings { get; } = new List<string>();
+
+        /// <summary>逐条动作明细，成功也要说的那种。由调用方打成 stdout 注释行，不进事件协议。</summary>
+        public List<string> Rewrites { get; } = new List<string>();
     }
 
     /// <summary>
@@ -55,6 +93,8 @@ namespace RePKG_Re.Application.Package
             public PackageEntry Source;
             public string LooseFile;
             public long RowFieldPosition; // 该行"偏移"字段的起点，长度紧随其后
+            public bool IsSceneFile;      // 移动包的 texturereduction 键要写进这一条
+            public bool NeedsCompat;      // 着色器源码要做 GLSL ES 兼容改写
         }
 
         public MobilePackageReport Convert(
@@ -73,6 +113,8 @@ namespace RePKG_Re.Application.Package
             // 拿后者去读前者会整体错位，症状正是"长度对、内容全错"。
             var plan = BuildPlan(inputPkgPath, options, report, out var inputDataStart);
             _materializer.UseLz4 = options.UseLz4;
+            _materializer.Reduction = options.Reduction > 1 ? options.Reduction : 1;
+            _materializer.EncodeEtc2 = options.EncodeEtc2 && _materializer.Reduction > 1;
 
             using var input = new FileStream(inputPkgPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var output = new FileStream(outputMpkgPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
@@ -132,6 +174,7 @@ namespace RePKG_Re.Application.Package
             inputDataStart = package.HeaderSize;
             var plan = new List<PlanItem>(package.Entries.Count + 2);
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var sceneSlotOpen = true;
 
             foreach (var entry in package.Entries)
             {
@@ -147,8 +190,13 @@ namespace RePKG_Re.Application.Package
                 {
                     Name = entry.FullPath,
                     NameBytes = Encoding.UTF8.GetBytes(entry.FullPath),
-                    Source = entry
+                    Source = entry,
+                    // WE 把 texturereduction 写在场景文件的 general 块里;只认第一条同名条目
+                    IsSceneFile = sceneSlotOpen && Path.GetFileName(entry.FullPath)
+                        .Equals("scene.json", StringComparison.OrdinalIgnoreCase),
+                    NeedsCompat = options.ShaderCompat && ShaderCompatPatcher.IsShaderPath(entry.FullPath)
                 });
+                if (plan[plan.Count - 1].IsSceneFile) sceneSlotOpen = false;
                 report.InputBytes += entry.Length;
             }
 
@@ -185,6 +233,12 @@ namespace RePKG_Re.Application.Package
 
             var bytes = PackageReader.ReadEntryBytesFromStream(input, inputDataStart, item.Source.Offset, item.Source.Length);
 
+            if (item.IsSceneFile)
+                return RecordReduction(bytes, item, report, _materializer.Reduction);
+
+            if (item.NeedsCompat)
+                return ApplyShaderCompat(bytes, item, report);
+
             if (!item.Name.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
             {
                 report.Copied++;
@@ -197,6 +251,9 @@ namespace RePKG_Re.Application.Package
             {
                 case MaterializeAction.Materialized:
                     report.Materialized++;
+                    if (result.Reduced) report.Reduced++;
+                    if (result.EncodedEtc2) report.Etc2Encoded++;
+                    if (result.FramesScaled) report.FramesScaled++;
                     return result.Bytes;
 
                 case MaterializeAction.Refused:
@@ -208,6 +265,56 @@ namespace RePKG_Re.Application.Package
                     report.Copied++;
                     return bytes;
             }
+        }
+
+        private byte[] ApplyShaderCompat(byte[] bytes, PlanItem item, MobilePackageReport report)
+        {
+            var source = Encoding.UTF8.GetString(bytes);
+            var result = ShaderCompatPatcher.Patch(source);
+            if (!result.Changed)
+            {
+                report.Copied++;
+                return bytes;
+            }
+            var patched = Encoding.UTF8.GetBytes(result.Text);
+            // 只补 ".0"，所以改写前后的 UTF-8 字节必须只差在插入的字符上：整体长度差 = 2 × 字面量数。
+            // 对不上就说明解码/编码本身没还原原文（异常字节），宁可这条不动也别把着色器写坏。
+            if (patched.LongLength - bytes.LongLength != result.LiteralsChanged * 2L)
+            {
+                report.Warnings.Add($"{item.Name}: 着色器含无法按 UTF-8 往返的字节，放弃兼容改写、按原样写出");
+                report.Copied++;
+                return bytes;
+            }
+            report.ShadersRewritten++;
+            report.ShaderLiterals += result.LiteralsChanged;
+            report.Rewrites.Add($"{item.Name} {result.LinesChanged} 行/{result.LiteralsChanged} 处");
+            return patched;
+        }
+
+        /// <summary>
+        /// 缩了像素就要在 scene.json 里留下 texturereduction —— WE 的移动包两件事总是成对出现。
+        /// 没缩时一个字节都不改：真机验过的产物形态就是"scene.json 与 PC 版逐字节相同"。
+        /// </summary>
+        private static byte[] RecordReduction(byte[] bytes, PlanItem item, MobilePackageReport report, int reduction)
+        {
+            report.Copied++;
+
+            if (reduction <= 1)
+            {
+                if (SceneJsonPatcher.HasTextureReduction(bytes))
+                    report.Warnings.Add($"{item.Name}: 包内已带 texturereduction 键，本次没缩纹理，按原样写出");
+                return bytes;
+            }
+
+            var patched = SceneJsonPatcher.SetTextureReduction(bytes, reduction, out var failure);
+            if (patched == null)
+            {
+                report.Warnings.Add($"{item.Name}: 写不进 texturereduction（{failure}），纹理已缩但场景文件保持原样");
+                return bytes;
+            }
+
+            report.ReductionRecorded = true;
+            return patched;
         }
 
         private static void PatchRow(Stream output, long rowFieldPosition, long offset, int length)

@@ -31,6 +31,7 @@ namespace RePKG_Re.Core.Texture
                 case MipmapFormat.CompressedDXT5:
                 case MipmapFormat.CompressedDXT3:
                 case MipmapFormat.CompressedDXT1:
+                case MipmapFormat.CompressedETC2RGBA8:
                     return true;
                 
                 default:

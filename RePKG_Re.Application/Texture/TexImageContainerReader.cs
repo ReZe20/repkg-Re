@@ -17,7 +17,11 @@ namespace RePKG_Re.Application.Texture
             _texImageReader = texImageReader;
         }
 
-        public ITexImageContainer ReadFrom(BinaryReader reader, TexFormat texFormat)
+        public ITexImageContainer ReadFrom(
+            BinaryReader reader,
+            TexFormat texFormat,
+            bool readPixels = true,
+            int onlyImage = -1)
         {
             if (reader == null) throw new ArgumentNullException(nameof(reader));
 
@@ -78,19 +82,32 @@ namespace RePKG_Re.Application.Texture
             {
                 for (var i = 0; i < imageCount; i++)
                 {
+                    // onlyImage 挑中哪张就只给哪张装像素:一张图集五条 7680×7560 的 DXT 全解码驻留就是 1.1GB,
+                    // 逐张读能把峰值压到单张的量级。没挑中的那张只走 mip 记录,载荷按长度 Seek 掉。
+                    _texImageReader.ReadMipmapBytes = readPixels && (onlyImage < 0 || i == onlyImage);
                     container.Images.Add(_texImageReader.ReadFrom(reader, container, texFormat));
                 }
             }
             finally
             {
                 _texImageReader.DecompressMipmapBytes = true;
+                _texImageReader.ReadMipmapBytes = true;
             }
+
+            // readPixels=false 时上面读到的只有 mip 记录(尺寸/载荷长度),像素是 null:
+            // 既没解压也就没有"释放压缩块"这一步可做,直接交回给调用方判方向。
+            if (!readPixels)
+                return container;
 
             // 并行解压(DXT 解压是纯 CPU 大头,多张源图互不依赖;
             // 任务进 .NET 全局线程池,多 pkg 并行时自动分核)
             var mipmaps = new List<ITexMipmap>();
             foreach (var image in container.Images)
-                mipmaps.AddRange(image.Mipmaps);
+            foreach (var mip in image.Mipmaps)
+            {
+                if (mip.Bytes == null) continue;   // onlyImage 没挑中的那些:没有像素也就没有要解压的东西
+                mipmaps.Add(mip);
+            }
 
             if (mipmaps.Count > 1)
             {

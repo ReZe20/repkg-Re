@@ -106,6 +106,9 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.mpkgMagic` | string | `PKGM0019` | `mode: mpkg` only - magic written into the output package | - |
 | `options.keepAudio` | bool | false | `mode: mpkg` only - keep `sounds/*.mp3` instead of dropping them | - |
 | `options.noLz4` | bool | false | `mode: mpkg` only - don't try to LZ4-compress materialized pixels | - |
+| `options.mpkgReduction` | int | 1 | `mode: mpkg` only - texture downscale divisor (WE's 2x / 4x presets). Only entries that get materialized are resized; the size is also recorded as `"texturereduction"` in the scene file | - |
+| `options.mpkgEtc2` | bool | false | `mode: mpkg` only - emit reduced pixels as ETC2 RGBA8 (`format=5`, 1 byte/pixel) instead of RGBA8. Requires `mpkgReduction > 1`; not yet verified on a phone, hence off by default | - |
+| `options.mpkgNoShaderCompat` | bool | false | `mode: mpkg` only - `true` turns off the GLSL → GLSL ES rewrite that appends `.0` to integer literals sitting in a float context. Mobile GLSL has no implicit int→float, so a shader that fails to compile makes its material fall back to the base texture and the layer shows up as a plain white rectangle. Every rewrite is reported per package as `着色器改写 N条/M处` | - |
 
 #### mode: "mpkg" - converting a PC package into a mobile one
 
@@ -118,23 +121,28 @@ job carries that key (callers typically pass the wallpaper title or the workshop
 rebuilt, the magic becomes `mpkgMagic`, and `project.json` / the preview image are embedded from the files
 sitting next to the input package (a package that already carries them keeps its own copies).
 
-Per entry, exactly one of two things happens:
+Per entry, exactly one of these happens:
 
 - a texture whose payload is a **passthrough encoded image** (TEX container `imageFormat != FIF_UNKNOWN`,
   i.e. the pixels are stored as a PNG/JPEG blob) is decoded to raw RGBA8 - straight alpha, one mip,
   `TEXB0004` with `imageFormat = FIF_UNKNOWN`, and LZ4 when that actually shrinks the payload. Mobile
   reads such an entry as `width*height*4` raw bytes, so a passthrough blob renders as garbage.
 - **everything else is copied byte for byte**, including DXT1/3/5 textures with their full mip chains,
-  R8/RG88 masks, video textures (an mp4 embedded in a `.tex`), models, shaders and JSON. Textures the
+  R8/RG88 masks, video textures (an mp4 embedded in a `.tex`), models and JSON. Textures the
   reader cannot parse are copied as well, so an unknown format never blocks a conversion.
+- `.frag`/`.vert` sources are copied byte for byte **except** that an integer literal standing in a float
+  context gets a `.0` suffix (the rewrite is insert-only: the output equals the input with `".0"` spliced in
+  after `N` literals, and nothing else changes). Mobile GLSL has no implicit int→float, so an unpatched
+  shader fails to compile and its material silently falls back to the base texture - on screen that is a
+  white rectangle. Set `mpkgNoShaderCompat` to keep the sources untouched.
 
 `mode: mpkg` runs one package at a time and caps wallpaper concurrency at 2: packing writes a single
 output file, so entries cannot be spread over workers, and one materialized 8K texture alone can need
 ~230 MB of pixel buffer.
 
-The conversion is deliberately faithful rather than small: it never rescales a texture, so an output
-package is typically about twice the size of a Wallpaper Engine export made with a reduced quality
-setting (which halves every texture and re-encodes them).
+With `mpkgReduction = 1` (the default) the conversion is deliberately faithful rather than small: it never
+rescales a texture, so an output package is typically about twice the size of a Wallpaper Engine export made
+with a reduced quality setting (which halves every texture and re-encodes them).
 
 Not expressible in a manifest: `--tex`, `--recursive`, `--usename`, `--copyproject`,
 `--min-entry-size`, `--max-entry-size` (no manifest key exists for them), and `--lazy` - the batch

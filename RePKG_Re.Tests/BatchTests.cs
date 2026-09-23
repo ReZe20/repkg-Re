@@ -210,7 +210,7 @@ namespace RePKG_Re.Tests
         }
 
         /// <summary>
-        /// README「Manifest schema」那张表的守门用例:顶层键 + 15 个 options 键一次填满,逐字段断言映射结果,
+        /// README「Manifest schema」那张表的守门用例:顶层键 + 18 个 options 键一次填满,逐字段断言映射结果,
         /// 并断言 manifest 无法表达的那几个必须保持关闭。表里任何一格与代码分叉(改名、漏映射、
         /// 默认值变了),这里就红。
         /// </summary>
@@ -237,7 +237,10 @@ namespace RePKG_Re.Tests
     ""filterEffectImages"": 85,
     ""mpkgMagic"": ""PKGM0016"",
     ""keepAudio"": true,
-    ""noLz4"": true
+    ""noLz4"": true,
+    ""mpkgReduction"": 2,
+    ""mpkgEtc2"": true,
+    ""mpkgNoShaderCompat"": true
   }
 }");
 
@@ -266,6 +269,13 @@ namespace RePKG_Re.Tests
             Assert.That(mobile.Magic, Is.EqualTo("PKGM0016"));
             Assert.That(mobile.DropAudio, Is.False);
             Assert.That(mobile.UseLz4, Is.False);
+            Assert.That(mobile.Reduction, Is.EqualTo(2));
+            Assert.That(mobile.EncodeEtc2, Is.True);
+            Assert.That(mobile.ShaderCompat, Is.False);   // mpkgNoShaderCompat: true → 关
+
+            // 编码只在缩过之后才有意义:÷1 又开编码是配错了,要报出来而不是静默发 fmt0
+            manifest.Options.MpkgReduction = 1;
+            Assert.Throws<ArgumentException>(() => manifest.ToMobileOptions());
 
             // manifest 表达不了的选项:batch 自己接管,映射结果必须是关闭/空
             Assert.That(o.Lazy, Is.False);            // 执行器本就按需读取条目
@@ -276,6 +286,23 @@ namespace RePKG_Re.Tests
             Assert.That(o.CopyProject, Is.False);
             Assert.That(o.MaxEntrySize, Is.Zero);
             Assert.That(o.MinEntrySize, Is.Zero);
+        }
+
+        /// <summary>兼容改写必须由 manifest 默认开着：漏配键的后果是一块白，不是包变大。</summary>
+        [Test]
+        public void MpkgNoShaderCompat_Absent_ShaderCompat_StaysOn()
+        {
+            var path = Path.Combine(_tempDir, "mpkg_defaults.json");
+            File.WriteAllText(path, @"{
+  ""mode"": ""mpkg"",
+  ""wallpapers"": [ { ""id"": ""A"", ""input"": ""C:/in"", ""output"": ""C:/out"" } ]
+}");
+
+            var mobile = BatchManifest.Load(path).ToMobileOptions();
+            Assert.That(mobile.ShaderCompat, Is.True);
+            Assert.That(mobile.Reduction, Is.EqualTo(1));
+            Assert.That(mobile.EncodeEtc2, Is.False);
+            Assert.That(mobile.DropAudio, Is.True);
         }
 
         /// <summary>表头那句「manifest 键按不区分大小写匹配」的守门用例。</summary>

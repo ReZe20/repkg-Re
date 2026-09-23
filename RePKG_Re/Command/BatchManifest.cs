@@ -99,7 +99,10 @@ namespace RePKG_Re.Command
                     FilterEffectImages = LegacyJson.AsInt(GetProp(o, "filterEffectImages")) ?? 0,
                     MpkgMagic = LegacyJson.AsString(GetProp(o, "mpkgMagic")),
                     KeepAudio = LegacyJson.AsBool(GetProp(o, "keepAudio")) ?? false,
-                    NoLz4 = LegacyJson.AsBool(GetProp(o, "noLz4")) ?? false
+                    NoLz4 = LegacyJson.AsBool(GetProp(o, "noLz4")) ?? false,
+                    MpkgReduction = LegacyJson.AsInt(GetProp(o, "mpkgReduction")) ?? 1,
+                    MpkgEtc2 = LegacyJson.AsBool(GetProp(o, "mpkgEtc2")) ?? false,
+                    MpkgNoShaderCompat = LegacyJson.AsBool(GetProp(o, "mpkgNoShaderCompat")) ?? false
                 };
             }
 
@@ -169,7 +172,19 @@ namespace RePKG_Re.Command
             {
                 Magic = string.IsNullOrWhiteSpace(o.MpkgMagic) ? "PKGM0019" : o.MpkgMagic,
                 DropAudio = !o.KeepAudio,
-                UseLz4 = !o.NoLz4
+                UseLz4 = !o.NoLz4,
+                Reduction = o.MpkgReduction switch
+                {
+                    < 1 => throw new ArgumentException($"mpkgReduction 必须 >= 1（1=不缩，WE 的下拉只有 1/2/4），当前 {o.MpkgReduction}"),
+                    _ => o.MpkgReduction
+                },
+                // 编码只在缩过之后才有意义（÷1 那条路是逐字节验过的形态），不缩又开编码一定是配错了
+                EncodeEtc2 = !o.MpkgEtc2
+                    ? false
+                    : o.MpkgReduction > 1
+                        ? true
+                        : throw new ArgumentException("mpkgEtc2 只在 mpkgReduction > 1 时有意义（÷1 发的是已验过的 RGBA8 形态）"),
+                ShaderCompat = !o.MpkgNoShaderCompat
             };
         }
 
@@ -245,5 +260,14 @@ namespace RePKG_Re.Command
 
         /// <summary>true = 物化出的 RGBA8 不试 LZ4(排查压缩侧问题时用)</summary>
         public bool NoLz4 { get; set; }
+
+        /// <summary>纹理缩小除数,对应 WE "纹理缩小"下拉的 原始/2×/4×。1=不缩(默认)</summary>
+        public int MpkgReduction { get; set; } = 1;
+
+        /// <summary>true = 缩小过的物化纹理发 ETC2 RGBA8(fmt5)而不是 RGBA8。默认关:这套字节还没上真机</summary>
+        public bool MpkgEtc2 { get; set; }
+
+        /// <summary>true = 关掉着色器兼容改写(整数字面量不补 ".0")。默认开:不改写时手机编译失败、材质回退成基础贴图,画面就是一块白</summary>
+        public bool MpkgNoShaderCompat { get; set; }
     }
 }

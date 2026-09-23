@@ -126,6 +126,9 @@ namespace RePKG_Re.Command
                 Magic = _options.Magic,
                 DropAudio = _options.DropAudio,
                 UseLz4 = _options.UseLz4,
+                Reduction = _options.Reduction,
+                EncodeEtc2 = _options.EncodeEtc2,
+                ShaderCompat = _options.ShaderCompat,
                 ProjectJsonPath = FindLoose(pkg, "project.json"),
                 PreviewPath = FindPreview(pkg)
             };
@@ -140,10 +143,28 @@ namespace RePKG_Re.Command
                 EmitEntry(wallpaper.Id, cursor, entry);
             });
 
+            // 缩了就必须交代场景文件里那个键：纹理缩了但键没写进去，手机侧的行为是未知的
+            var reduced = options.Reduction > 1
+                ? $" 缩小 {report.Reduced}(÷{options.Reduction}) 场景键 {(report.ReductionRecorded ? "已写" : "未写")}" +
+                  (options.EncodeEtc2 ? $" fmt5 {report.Etc2Encoded}" : "") +
+                  (report.FramesScaled > 0 ? $" 帧表 {report.FramesScaled}" : "")
+                : "";
+
+            // 这串必须无条件报：真机上一块白，要能分清是"改写没跑到"还是"改写不到位"，
+            // 而 0 条本身就是读数 —— 不含整数字面量的着色器包不该被改动。
+            var compat = options.ShaderCompat
+                ? $" 着色器改写 {report.ShadersRewritten}条/{report.ShaderLiterals}处"
+                : " 着色器改写 关";
+
             Console.WriteLine(
                 $"* mpkg {pkg.Name} → {Path.GetFileName(target)}  " +
                 $"{report.InputBytes}→{report.OutputBytes}B 条目 {report.Entries} 物化 {report.Materialized} " +
-                $"搬运 {report.Copied} 丢弃 {report.Dropped}");
+                $"搬运 {report.Copied} 丢弃 {report.Dropped}{reduced}{compat}");
+
+            // 逐文件明细走 stdout 注释行，不进事件协议：前端只解析带 '{' 的行，
+            // 而报错通道 report.Warnings 的语义是"该做的没做成"，例行播报混进去会让成功看起来像失败。
+            foreach (var rewrite in report.Rewrites)
+                Console.WriteLine($"*   着色器兼容改写 {rewrite}");
 
             foreach (var warning in report.Warnings)
                 EmitError(wallpaper.Id, pkg.Name, warning);

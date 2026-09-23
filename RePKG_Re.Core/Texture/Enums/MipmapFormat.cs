@@ -40,6 +40,12 @@ namespace RePKG_Re.Core.Texture
         VideoMp4,
 
         /// <summary>
+        /// ETC2 RGBA8 blocks (EAC alpha + ETC2 color)，1 字节/像素。
+        /// 只有移动端包里有，repkg 目前能搬运/写出，但没有解码器，导不成图。
+        /// </summary>
+        CompressedETC2RGBA8,
+
+        /// <summary>
         /// Windows or OS/2 Bitmap File (*.BMP)
         /// </summary>
         /// Keep '= 1000' because MipmapFormatExtensions.IsImage uses this to check if format is an image format

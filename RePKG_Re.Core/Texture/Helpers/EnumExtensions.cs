@@ -9,6 +9,7 @@ namespace RePKG_Re.Core.Texture
             {
                 case TexFormat.RGBA8888:
                 case TexFormat.DXT5:
+                case TexFormat.ETC2_RGBA8:
                 case TexFormat.DXT3:
                 case TexFormat.DXT1:
                 case TexFormat.RG88:

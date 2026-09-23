@@ -20,6 +20,8 @@ namespace RePKG_Re.Core.Texture
                     return MipmapFormat.RGBA8888;
                 case TexFormat.DXT5:
                     return MipmapFormat.CompressedDXT5;
+                case TexFormat.ETC2_RGBA8:
+                    return MipmapFormat.CompressedETC2RGBA8;
                 case TexFormat.DXT3:
                     return MipmapFormat.CompressedDXT3;
                 case TexFormat.DXT1:

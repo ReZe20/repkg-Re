@@ -1,5 +1,7 @@
 # RePKG_Re
 
+**English** | [简体中文](README.zh-CN.md)
+
 A fork of [RePKG](https://github.com/notscuffed/repkg) by ReZe20.
 
 Modified .pkg extractor and .tex converter for [Wallpaper Engine](https://www.wallpaperengine.io/) wallpapers.
@@ -17,6 +19,12 @@ Feel free to report errors.
 - Convert PKG into wallpaper engine project
 - Convert TEX to image
 - Dump PKG/TEX info
+- Batch mode: convert PC packages into mobile `.mpkg` packages, and back
+
+### Platforms
+Runs on Windows, Linux and macOS on .NET 10 (JIT), and ships NativeAOT single-file
+binaries for win-x64 and linux-x64. macOS support (memory sampling) is implemented
+but not yet verified on real hardware.
 
 ### Commands
 - `--help` (or `-h`, `-?`) - lists the commands; `extract --help`, `info --help` and `batch --help` list the options of one command
@@ -29,7 +37,8 @@ Feel free to report errors.
 -t, --tex                 Convert all TEX files into images from the directory given as input
 -s, --singledir           Put all extracted files in one directory instead of their entry path
 -r, --recursive           Search all subfolders of the specified directory
--c, --copyproject         Copy project.json and preview.jpg from beside the PKG into output
+-c, --copyproject         Copy project.json and the preview image (as declared in project.json)
+                          from beside the PKG into output
 -n, --usename             Use the title in project.json as the subfolder name instead of the id
 --no-tex-convert          Don't convert TEX files into images while extracting PKG
 -p, --only-tex-images     Skip raw .tex output, keep only converted images (the .tex-json sidecar
@@ -65,7 +74,8 @@ Feel free to report errors.
                           (case-insensitive)
 ```
 - batch - runs many wallpapers in one process, driven by a JSON manifest; `mode` selects unpacking
-  them to files (`extract`) or rewriting them as mobile packages (`mpkg`)
+  them to files (`extract`), rewriting them as mobile packages (`mpkg`), or converting mobile
+  packages back to PC ones (`pkg`)
 ```
 repkg batch --manifest manifest.json [--threads 8]
 ```
@@ -84,13 +94,13 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 
 | Key | Type | Default | Meaning | CLI equivalent |
 | --- | --- | --- | --- | --- |
-| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg` (see below) | - |
+| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg`; `pkg` = convert a mobile package back to a PC `.pkg` (see below) | - |
 | `threads` | int | 0 | worker threads, 0 = physical core count | `--threads` (wins over this) |
 | `wallpapers` | array | - | jobs, one item per wallpaper; required | - |
 | `wallpapers[].id` | string | - | echoed back in every event of this wallpaper | - |
 | `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them | `<input>` |
 | `wallpapers[].output` | string | - | output directory for this wallpaper | `--output` |
-| `wallpapers[].outputName` | string | source package name | `mode: mpkg` only - file name (without extension) of the produced `.mpkg`; invalid characters are replaced with `_`, and a wallpaper that yields several packages gets `_<source-name>` appended so they don't overwrite each other | - |
+| `wallpapers[].outputName` | string | source package name | `mode: mpkg` / `mode: pkg` - file name (without extension) of the produced `.mpkg`/`.pkg`; invalid characters are replaced with `_`, and a wallpaper that yields several packages gets `_<source-name>` appended so they don't overwrite each other | - |
 | `options.overwrite` | bool | false | overwrite existing files | `--overwrite` |
 | `options.onlypaths` | string[] | none | directory prefixes to keep | `--onlypaths` |
 | `options.ignorepaths` | string[] | none | directory prefixes to drop | `--ignorepaths` |
@@ -109,6 +119,9 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.mpkgReduction` | int | 1 | `mode: mpkg` only - texture downscale divisor (WE's 2x / 4x presets). Only entries that get materialized are resized; the size is also recorded as `"texturereduction"` in the scene file | - |
 | `options.mpkgEtc2` | bool | false | `mode: mpkg` only - emit reduced pixels as ETC2 RGBA8 (`format=5`, 1 byte/pixel) instead of RGBA8. Requires `mpkgReduction > 1`; not yet verified on a phone, hence off by default | - |
 | `options.mpkgNoShaderCompat` | bool | false | `mode: mpkg` only - `true` turns off the GLSL → GLSL ES rewrite that appends `.0` to integer literals sitting in a float context. Mobile GLSL has no implicit int→float, so a shader that fails to compile makes its material fall back to the base texture and the layer shows up as a plain white rectangle. Every rewrite is reported per package as `着色器改写 N条/M处` | - |
+| `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` only - magic written into the output PC package | - |
+| `options.noDematerialize` | bool | false | `mode: pkg` only - `true` copies materialized RGBA8 textures verbatim instead of re-encoding them back to a PNG passthrough blob (useful when debugging the reverse path) | - |
+| `options.keepReductionKey` | bool | false | `mode: pkg` only - `true` keeps the `"texturereduction"` key in `scene.json` instead of removing it | - |
 
 #### mode: "mpkg" - converting a PC package into a mobile one
 
@@ -147,6 +160,44 @@ with a reduced quality setting (which halves every texture and re-encodes them).
 Not expressible in a manifest: `--tex`, `--recursive`, `--usename`, `--copyproject`,
 `--min-entry-size`, `--max-entry-size` (no manifest key exists for them), and `--lazy` - the batch
 executor already reads entries on demand, so the flag is forced off (`BatchManifest.cs`).
+
+#### mode: "pkg" - converting a mobile package back to a PC one
+
+```
+{ "mode": "pkg", "wallpapers": [ { "id": "1", "input": "C:/out/scene.mpkg", "output": "C:/pc" } ] }
+```
+
+The reverse of `mode: mpkg`: the entry table is rebuilt with the magic set to `pkgMagic`
+(`PKGV0018` by default), and `project.json` / the preview image already inside the package are
+kept as-is. Like `mpkg` it runs one package at a time with wallpaper concurrency capped at 2, and
+its events use the same protocol.
+
+Per entry:
+
+- a texture that is **our own materialized output** (container `TEXB0004`, `imageFormat =
+  FIF_UNKNOWN`, header format RGBA8, a single frame) is re-encoded losslessly back into a PNG
+  passthrough blob and written as `imageFormat = FIF_PNG`. The pixel data round-trips byte for
+  byte; the encoded blob is not identical to the original PNG bytes, because those were discarded
+  by the forward conversion and cannot be recovered. Set `noDematerialize` to copy such entries
+  verbatim instead.
+- a `"texturereduction"` key in `scene.json` is removed, restoring the PC scene file (set
+  `keepReductionKey` to leave it alone).
+- **everything else is copied byte for byte**: DXT1/3/5 textures, R8/RG88 masks, video textures,
+  models, JSON, and textures the reader cannot parse (reported as an error event, never a
+  blocker).
+
+Two things the reverse path deliberately does **not** attempt:
+
+- **Shader `.0` rewrite is not undone.** The forward rewrite is insert-only and a PC GLSL source
+  may legitimately contain the same `1.0` literals, so an appended `.0` cannot be told apart from
+  a native one. Left-in `.0` suffixes are valid GLSL for the PC driver, so undoing them would be
+  risk without benefit.
+- **Dropped audio cannot come back**, and ETC2 (or downscaled) pixels cannot be restored to their
+  original resolution — those inputs are gone by the time the `.mpkg` exists. Converting a
+  `mpkgReduction > 1` package back yields a valid PC package with the smaller textures it carries.
+
+A Wallpaper Engine *phone export* (as opposed to one produced by this tool) usually stores DXT or
+already-encoded textures; for those the conversion is the container swap alone and is lossless.
 
 Manifest format (0 = physical core count for threads; options match extract):
 ```

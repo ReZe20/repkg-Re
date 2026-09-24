@@ -13,6 +13,44 @@ permissions:
   contents: read
 
 jobs:
+  # Linux 适配(见 RePKG_Re/Helper/SystemInfo*.cs、ProcessorInfo.cs):JIT 构建 + 单元测试 + 冒烟。
+  # 与 windows job 分离,因为 NativeAOT 只能在目标平台链接;Linux 侧暂只做框架依赖(JIT)。
+  build-test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建
+        run: dotnet build RePKG_Re.sln -c Release --nologo -v:m
+
+      - name: 单元测试
+        run: dotnet test RePKG_Re.Tests/RePKG_Re.Tests.csproj -c Release --nologo -v:m
+
+      - name: 冒烟 --help/--version
+        run: |
+          dll=RePKG_Re/bin/Release/net10.0/RePKG_Re.dll
+          dotnet "$dll" --version
+          dotnet "$dll" --help >/dev/null
+
+      # Linux NativeAOT:与 Windows 侧同一判据(体积阈值 + --help 冒烟)。
+      # 链接需 clang + zlib 头(clang 由 setup-dotnet 的依赖链提供,仍显式装一遍以防 runner 镜像变化)。
+      - name: 发布 linux-x64 NativeAOT 并冒烟
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang zlib1g-dev
+          dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotLinuxX64 --nologo -v:m
+          exe=RePKG_Re/bin/publish-aot-linux/RePKG_Re
+          test -f "$exe" || { echo "未找到 AOT 产物: $exe"; exit 1; }
+          len=$(stat -c%s "$exe")
+          # 阈值 5MB:框架依赖空壳约 0.16MB,空 console 的 AOT 地板约 0.9MB,本产物实测约 9MB
+          [ "$len" -ge 5242880 ] || { echo "AOT 产物体积异常($len 字节 < 5MB),疑似退回框架依赖"; exit 1; }
+          if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
+          echo "冒烟通过: $exe ($len 字节)"
+
   build-test:
     # NativeAOT 只能在目标平台链接(Windows 上产 win-x64 exe),不能用 ubuntu
     runs-on: windows-latest

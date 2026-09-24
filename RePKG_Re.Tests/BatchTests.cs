@@ -210,7 +210,7 @@ namespace RePKG_Re.Tests
         }
 
         /// <summary>
-        /// README「Manifest schema」那张表的守门用例:顶层键 + 18 个 options 键一次填满,逐字段断言映射结果,
+        /// README「Manifest schema」那张表的守门用例:顶层键 + 21 个 options 键一次填满,逐字段断言映射结果,
         /// 并断言 manifest 无法表达的那几个必须保持关闭。表里任何一格与代码分叉(改名、漏映射、
         /// 默认值变了),这里就红。
         /// </summary>
@@ -240,7 +240,10 @@ namespace RePKG_Re.Tests
     ""noLz4"": true,
     ""mpkgReduction"": 2,
     ""mpkgEtc2"": true,
-    ""mpkgNoShaderCompat"": true
+    ""mpkgNoShaderCompat"": true,
+    ""pkgMagic"": ""PKGV0023"",
+    ""noDematerialize"": true,
+    ""keepReductionKey"": true
   }
 }");
 
@@ -276,6 +279,12 @@ namespace RePKG_Re.Tests
             // 编码只在缩过之后才有意义:÷1 又开编码是配错了,要报出来而不是静默发 fmt0
             manifest.Options.MpkgReduction = 1;
             Assert.Throws<ArgumentException>(() => manifest.ToMobileOptions());
+
+            // mode:pkg(逆向)那三个键同样钉住:两个取反键最容易被写反
+            var pc = manifest.ToPcOptions();
+            Assert.That(pc.Magic, Is.EqualTo("PKGV0023"));
+            Assert.That(pc.Dematerialize, Is.False);      // noDematerialize: true → 关
+            Assert.That(pc.ClearTextureReduction, Is.False); // keepReductionKey: true → 不清
 
             // manifest 表达不了的选项:batch 自己接管,映射结果必须是关闭/空
             Assert.That(o.Lazy, Is.False);            // 执行器本就按需读取条目

@@ -76,6 +76,61 @@ namespace RePKG_Re.Application.Package
             return false;
         }
 
+        /// <summary>
+        /// 删掉 general 块里的 texturereduction 成员（逆向 SetTextureReduction）。
+        /// 返回 null = 没动：键不存在（failure=null，正常情况）、扫描器读歪、或它是块里唯一成员
+        /// （删了会留 "general" : {}，语义变化不值得冒）。成功时整行（含缩进与换行）精确移除，
+        /// 其余字节一个不动 —— 与插入侧同款的"只剪不排"原则。
+        /// </summary>
+        public static byte[] RemoveTextureReduction(byte[] sceneJson, out string failure)
+        {
+            failure = null;
+            if (sceneJson == null || sceneJson.Length == 0) return null;
+
+            var text = Encoding.UTF8.GetString(sceneJson);
+            var general = FindGeneralBlock(text);
+            if (general < 0) return null; // 没有 general 块 = 不可能带这个键
+
+            var members = ReadMembers(text, general);
+            if (members == null)
+            {
+                failure = "general 块成员解析失败";
+                return null;
+            }
+
+            var at = -1;
+            for (var i = 0; i < members.Count; i++)
+                if (string.Equals(members[i].Name, Key, StringComparison.Ordinal)) at = i;
+            if (at < 0) return null; // 键不存在，没东西可删，不算错
+
+            if (members.Count == 1)
+            {
+                failure = "它是 general 块里的唯一成员，删除会掏空该块";
+                return null;
+            }
+
+            var m = members[at];
+            var after = SkipWhitespace(text, m.ValueEnd);
+            if (after < text.Length && text[after] == ',')
+            {
+                // 非末尾：删 [本行行首, 下一成员行首)，正好是插入侧 Splice 的逆
+                var from = LineStart(text, m.KeyStart);
+                var to = LineStart(text, members[at + 1].KeyStart);
+                return Remove(text, from, to);
+            }
+
+            // 末尾成员:连同前一个成员值后的逗号一起删,[prev.ValueEnd, m.ValueEnd)。
+            // 不能删到"行尾之后" —— 单行 JSON 里那会把块的收尾 '}' 一起吞掉(测试实测抓出)。
+            var prevEnd = members[at - 1].ValueEnd;
+            return Remove(text, prevEnd, m.ValueEnd);
+        }
+
+        private static byte[] Remove(string text, int from, int to)
+        {
+            if (to <= from) return null;
+            return Encoding.UTF8.GetBytes(text.Substring(0, from) + text.Substring(to));
+        }
+
         private sealed class Member
         {
             public string Name;

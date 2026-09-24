@@ -173,17 +173,19 @@ namespace RePKG_Re.Command
         /// <summary>
         /// 输出文件名主干:清单没给 outputName 就用源包名;给了就清洗掉非法文件名字符(调用方给的往往是壁纸标题,
         /// 标题里有 : / ? 这类字符是常态),并在一个壁纸解出多个包时缀上源包名 —— 否则几个包会写进同一个文件。
+        /// 正向(mpkg)与逆向(pkg)共用,清洗逻辑必须只有一份(见 Extensions.IsInvalidFileNameChar)。
         /// </summary>
-        private static string ResolveStem(BatchWallpaper wallpaper, FileInfo pkg, bool multiple)
+        internal static string ResolveStem(BatchWallpaper wallpaper, FileInfo pkg, bool multiple)
         {
             var source = Path.GetFileNameWithoutExtension(pkg.Name);
             var name = (wallpaper.OutputName ?? "").Trim();
             if (name.Length == 0) return source;
 
-            var invalid = Path.GetInvalidFileNameChars();
+            // 跨平台固定集合(见 Extensions.InvalidFileNameChars),不用平台相关的
+            // Path.GetInvalidFileNameChars():否则同一标题在 Linux/Windows 洗出不同文件名。
             var chars = name.ToCharArray();
             for (var i = 0; i < chars.Length; i++)
-                if (Array.IndexOf(invalid, chars[i]) >= 0) chars[i] = '_';
+                if (Extensions.IsInvalidFileNameChar(chars[i])) chars[i] = '_';
             name = new string(chars).Trim();
 
             return name.Length == 0

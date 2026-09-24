@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace RePKG_Re
@@ -8,29 +7,12 @@ namespace RePKG_Re
     /// 内存闸:按系统可用物理内存门控并发转换,在 OOM 之前介入(而非崩溃后恢复)。
     /// worker 处理 TEX 转换条目前 TryAcquire(预估字节),处理完 Release;
     /// 闸内余量不足时有限重试,超时放行(退化无闸行为,保证不因闸而死锁)。
-    /// 采样线程轮询 GlobalMemoryStatusEx;预算 = 可用内存 × 安全比例 − 在途预订。
+    /// 采样经 SystemInfo.GetAvailablePhysicalMemory()(Windows=GlobalMemoryStatusEx,
+    /// Linux=MemAvailable,macOS=sysctl);预算 = 可用内存 × 安全比例 − 在途预订。
     /// 注:只控 TEX 转换(ImageSharp 位图是内存大头);raw 拷贝按字节计,有 worker 数天然上界。
     /// </summary>
     public class MemoryGate
     {
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-        private struct MEMORYSTATUSEX
-        {
-            public uint dwLength;
-            public uint dwMemoryLoad;
-            public ulong ullTotalPhys;
-            public ulong ullAvailPhys;
-            public ulong ullTotalPageFile;
-            public ulong ullAvailPageFile;
-            public ulong ullTotalVirtual;
-            public ulong ullAvailVirtual;
-            public ulong ullAvailExtendedVirtual;
-        }
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
-
         private const int DefaultMaxRetries = 100; // 100 × 20ms = 2s 仍无余量则放行
         private const int DefaultRetryDelayMs = 20;
 
@@ -84,9 +66,11 @@ namespace RePKG_Re
 
         private void Sample()
         {
-            var st = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
-            if (GlobalMemoryStatusEx(ref st))
-                Interlocked.Exchange(ref _availPhys, (long)st.ullAvailPhys);
+            var avail = SystemInfo.GetAvailablePhysicalMemory();
+            // 查询失败(0)保留上次值:与 Windows 原语义一致(失败时 _availPhys 不变);
+            // 从未成功过则维持 0 → 预算 0 → TryAcquire 重试耗尽放行(退化无闸,不死锁)。
+            if (avail > 0)
+                Interlocked.Exchange(ref _availPhys, avail);
         }
 
         /// <summary>

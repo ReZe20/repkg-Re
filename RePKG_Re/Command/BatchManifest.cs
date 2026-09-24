@@ -17,10 +17,12 @@ namespace RePKG_Re.Command
         /// <summary>最大线程数(0 = CPU 核心数;Phase 1 生效)</summary>
         public int Threads { get; set; }
 
-        /// <summary>"extract"(默认,拆包成文件) | "mpkg"(整包转移动包)。二者执行器不同。</summary>
+        /// <summary>"extract"(默认,拆包成文件) | "mpkg"(整包转移动包) | "pkg"(移动包转回 PC 包)。三者执行器不同。</summary>
         public string Mode { get; set; }
 
         public bool IsMpkg => string.Equals(Mode, "mpkg", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsPkg => string.Equals(Mode, "pkg", StringComparison.OrdinalIgnoreCase);
 
         public List<BatchWallpaper> Wallpapers { get; set; }
 
@@ -102,7 +104,10 @@ namespace RePKG_Re.Command
                     NoLz4 = LegacyJson.AsBool(GetProp(o, "noLz4")) ?? false,
                     MpkgReduction = LegacyJson.AsInt(GetProp(o, "mpkgReduction")) ?? 1,
                     MpkgEtc2 = LegacyJson.AsBool(GetProp(o, "mpkgEtc2")) ?? false,
-                    MpkgNoShaderCompat = LegacyJson.AsBool(GetProp(o, "mpkgNoShaderCompat")) ?? false
+                    MpkgNoShaderCompat = LegacyJson.AsBool(GetProp(o, "mpkgNoShaderCompat")) ?? false,
+                    PkgMagic = LegacyJson.AsString(GetProp(o, "pkgMagic")),
+                    NoDematerialize = LegacyJson.AsBool(GetProp(o, "noDematerialize")) ?? false,
+                    KeepReductionKey = LegacyJson.AsBool(GetProp(o, "keepReductionKey")) ?? false
                 };
             }
 
@@ -113,9 +118,9 @@ namespace RePKG_Re.Command
 
         private void Validate()
         {
-            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !Mode.Equals("extract", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !IsPkg && !Mode.Equals("extract", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg)");
+                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg|pkg)");
                 Environment.Exit(1);
             }
 
@@ -185,6 +190,18 @@ namespace RePKG_Re.Command
                         ? true
                         : throw new ArgumentException("mpkgEtc2 只在 mpkgReduction > 1 时有意义（÷1 发的是已验过的 RGBA8 形态）"),
                 ShaderCompat = !o.MpkgNoShaderCompat
+            };
+        }
+
+        /// <summary>manifest 选项 → mpkg→pc 逆向选项。project.json/preview 与正向同理由 runner 定位。</summary>
+        public PcPackageOptions ToPcOptions()
+        {
+            var o = Options ?? new BatchOptionsModel();
+            return new PcPackageOptions
+            {
+                Magic = string.IsNullOrWhiteSpace(o.PkgMagic) ? "PKGV0018" : o.PkgMagic,
+                Dematerialize = !o.NoDematerialize,
+                ClearTextureReduction = !o.KeepReductionKey
             };
         }
 
@@ -269,5 +286,16 @@ namespace RePKG_Re.Command
 
         /// <summary>true = 关掉着色器兼容改写(整数字面量不补 ".0")。默认开:不改写时手机编译失败、材质回退成基础贴图,画面就是一块白</summary>
         public bool MpkgNoShaderCompat { get; set; }
+
+        // ---------- 以下仅 mode = "pkg"(mpkg→pc 逆向)生效 ----------
+
+        /// <summary>输出 PC 包魔数;留空 = PKGV0018(实测 WE PC 场景包用这个)</summary>
+        public string PkgMagic { get; set; }
+
+        /// <summary>true = 不把物化 RGBA8 重编码回 PNG 直通 blob,原样搬运(排查逆向时用)</summary>
+        public bool NoDematerialize { get; set; }
+
+        /// <summary>true = 保留 scene.json 的 texturereduction 键(默认删,与正向成对)</summary>
+        public bool KeepReductionKey { get; set; }
     }
 }

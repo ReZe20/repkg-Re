@@ -50,6 +50,15 @@ namespace RePKG_Re.Command
                 return;
             }
 
+            if (manifest.IsPkg)
+            {
+                // mpkg → PC 包逆向,与正向同构(单遍写+回填、壁纸级并发上限 2),执行器不同而已。
+                new PkgRunner(manifest.ToPcOptions(), manifest.Wallpapers, threads,
+                    manifest.Options?.Overwrite ?? false).Run();
+                Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
+                return;
+            }
+
             var ctx = new ExtractContext(manifest.ToExtractOptions());
             var runner = new BatchRunner(ctx, manifest.Wallpapers, threads);
             runner.Run();
@@ -306,17 +315,15 @@ namespace RePKG_Re.Command
                 GC.WaitForPendingFinalizers();
                 GC.Collect(2, GCCollectionMode.Optimized, blocking: true);
 
-                // 修剪物理工作集,把内存页归还给系统(下次用到再缺页读回,壁纸边界低频触发,影响可忽略)
-                SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(-1), (IntPtr)(-1));
+                // 修剪物理工作集,把内存页归还给系统(下次用到再缺页读回,壁纸边界低频触发,影响可忽略)。
+                // Windows=SetProcessWorkingSetSize(-1,-1),Linux=malloc_trim,其余平台仅依赖上面的 GC.Collect。
+                SystemInfo.TrimProcessWorkingSet();
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"* Memory trim failed: {e.Message}");
             }
         }
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool SetProcessWorkingSetSize(IntPtr process, IntPtr min, IntPtr max);
 
         private static string J(string s) => LegacyJson.QuoteString(s);
 

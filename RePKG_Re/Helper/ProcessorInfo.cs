@@ -6,31 +6,54 @@ using System.Runtime.InteropServices;
 namespace RePKG_Re
 {
     /// <summary>
-    /// CPU 物理核数查询。Environment.ProcessorCount 返回逻辑核数(含超线程),
-    /// 超线程对 ImageSharp 转换这类内存大户没有吞吐收益,只会翻倍内存占用
-    /// (每线程一张 4K 位图 ~250-400MB),所以并发线程数应以物理核数为准。
+    /// CPU 物理核数查询。Environment.ProcessorCount 返回逻辑核数(含超线程;Linux 上 .NET 还会自己按
+    /// cgroup 配额折算,但那是 runtime 行为,不把它当依据),超线程对 ImageSharp 转换这类内存大户没有
+    /// 吞吐收益,只会翻倍内存占用(每线程一张 4K 位图 ~250-400MB),所以并发线程数应以物理核数为准。
     /// Windows:GetLogicalProcessorInformation;Linux:读 /sys/devices/system/cpu/*/thread_siblings_list
-    /// 按"核"去重(macOS 无稳定 sysctl 口径,走兜底)。
+    /// 按"核"去重,再与 cgroup CPU 配额取更严的一侧(macOS 无稳定 sysctl 口径,走兜底)。
     /// 平台分支用 OperatingSystem.Is*() 守卫,AOT 下非目标平台 P/Invoke 整方法可裁。
     /// </summary>
     public static class ProcessorInfo
     {
         /// <summary>物理核数;失败时回退逻辑核数。</summary>
-        public static int GetPhysicalProcessorCount()
+        public static int GetPhysicalProcessorCount() => PickProcessorCount().Count;
+
+        /// <summary>
+        /// 上面那个数是从哪来的,只给 batch 的 stderr 读数用。会重跑一遍查询(读几个 sysfs 小文件),
+        /// 只在启动/诊断时调,别放进热路径。
+        /// </summary>
+        public static string DescribeCountSource() => PickProcessorCount().Source;
+
+        private static (int Count, string Source) PickProcessorCount()
         {
-            int physical = 0;
             try
             {
-                if (OperatingSystem.IsWindows()) physical = CountPhysicalWindows();
-                else if (OperatingSystem.IsLinux()) physical = CountPhysicalLinux();
+                if (OperatingSystem.IsWindows())
+                    return OrFallback(CountPhysicalWindows(), "GetLogicalProcessorInformation");
+
+                if (OperatingSystem.IsLinux())
+                {
+                    // sysfs 那个目录列的是宿主的核;容器给了 CPU 配额时必须再压一道,
+                    // 否则 --cpus=1 的容器里照样开出八个 worker,每个一张 4K 位图。
+                    int physical = CountPhysicalLinux();
+                    if (CgroupLimits.TryReadCpuQuota(out var quota, out var quotaSource))
+                        return physical > 0 && physical <= quota
+                            ? (physical, "sysfs thread_siblings")
+                            : (quota, quotaSource);
+
+                    return OrFallback(physical, "sysfs thread_siblings");
+                }
             }
             catch
             {
-                physical = 0;
+                // 查询失败退回逻辑核数,与改动前一致
             }
 
-            return physical > 0 ? physical : Environment.ProcessorCount;
+            return (Environment.ProcessorCount, "Environment.ProcessorCount");
         }
+
+        private static (int Count, string Source) OrFallback(int physical, string source)
+            => physical > 0 ? (physical, source) : (Environment.ProcessorCount, "Environment.ProcessorCount");
 
         // ---------- Windows ----------
 

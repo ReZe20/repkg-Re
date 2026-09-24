@@ -6,7 +6,8 @@ namespace RePKG_Re
     /// <summary>
     /// 跨平台系统信息门面:可用物理内存、进程工作集归还。
     /// Windows 保持原有 GlobalMemoryStatusEx / SetProcessWorkingSetSize 语义;
-    /// Linux 用 sysinfo(3) + malloc_trim(3);macOS 用 sysctl(hw.memsize / vm.page_free_size)。
+    /// Linux 用 /proc/meminfo 的 MemAvailable(再与 cgroup 限额取更严的一侧)+ malloc_trim(3);
+    /// macOS 用 sysctl(hw.memsize / vm.page_free_size)。
     /// 平台实现拆为 partial 文件并由 OperatingSystem.Is*() 运行时分支调用,
     /// AOT/裁剪分析据此把非目标平台的 P/Invoke 整方法裁掉(文档化模式)。
     /// 注意:不使用 #if LINUX/WINDOWS 编译符号 —— 无 RID 的框架依赖构建下它们不定义,会误裁。
@@ -34,6 +35,19 @@ namespace RePKG_Re
             if (OperatingSystem.IsLinux()) return AvailablePhysicalLinux();
             if (OperatingSystem.IsMacOS()) return AvailablePhysicalMacOS();
             return 0;
+        }
+
+        /// <summary>
+        /// 上面那个字节数是从哪来的,只给 batch 的 stderr 读数用:容器里被限额压住时,
+        /// 不写来源就分不清"机器真的没内存"和"闸看到的是宿主口径"。会多读几个小文件,
+        /// 只在启动/诊断时调,别放进采样循环。
+        /// </summary>
+        public static string DescribeMemorySource()
+        {
+            if (OperatingSystem.IsWindows()) return "GlobalMemoryStatusEx";
+            if (OperatingSystem.IsLinux()) return ReadAvailableLinux().Source;
+            if (OperatingSystem.IsMacOS()) return "sysctl";
+            return "unavailable";
         }
 
         /// <summary>

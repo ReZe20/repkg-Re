@@ -12,6 +12,17 @@
   `/sys/devices/system/cpu/*/topology/thread_siblings_list`, and returns freed pages with
   `malloc_trim`; macOS samples `sysctl`. The `MemoryGate` used by `batch` and the memory-trim path
   now run on Linux instead of throwing `DllNotFoundException`.
+- **Container limits (cgroup v1/v2) are honored**: `MemAvailable` and `/sys/devices/system/cpu` both
+  report the **host**, so inside a container the gate budgeted against memory that does not exist (the
+  symptom is an OOM kill, not lower concurrency) and the worker count ignored the CPU quota. New
+  `Helper/CgroupLimits.cs` parses both cgroup generations, and the Linux memory and core queries take
+  the stricter of host and limit. The limit is usually **not** at the mount root — `systemd-run
+  --scope`, WSL's `init.scope` and `cgroupns=host` all carry it on an intermediate layer — so the
+  caller's own scope from `/proc/self/cgroup` is tried first and the root only then. Both paths are
+  injectable and the parser makes no syscall, so all 22 tests run on any OS without a real container.
+  `batch` prints one `* gate: …` line naming the source of each number to stderr at startup. Measured
+  in a 512 MB / 1-core cage: 503 MB and 1 worker, where a root-only reading in the same cage still
+  reported 14.6 GB.
 - **NativeAOT on linux-x64**: new `AotLinuxX64` publish profile; the release pipeline can produce a
   single-file native binary for Linux next to the existing win-x64 one. Platform P/Invokes are
   guarded by runtime checks so the linker trims the non-target-platform code. Verified that a full
@@ -86,6 +97,13 @@
   `MemAvailable`（回退 `sysinfo(3)`），用 `/sys/devices/system/cpu/*/topology/thread_siblings_list`
   数物理核，用 `malloc_trim` 归还空闲页；macOS 走 `sysctl` 采样。`batch` 用的 `MemoryGate` 和内存整理
   路径现在能在 Linux 上运行，而不再抛 `DllNotFoundException`。
+- **认容器限额（cgroup v1/v2）**：`MemAvailable` 与 `/sys/devices/system/cpu` 报的都是**宿主**口径 ——
+  容器里内存闸等于按根本不存在的余量放人（症状是被 OOM-kill，而不是降并发），工作线程数也不理 CPU 配额。
+  新增 `Helper/CgroupLimits.cs` 解析两代 cgroup，Linux 的内存与核数查询一律取宿主与限额里更严的那一侧。
+  限额通常**不在**挂载根上 —— `systemd-run --scope`、WSL 的 `init.scope`、`cgroupns=host` 都把它挂在中间
+  某层 —— 所以先试 `/proc/self/cgroup` 指过去的那一层，读不到才退到根。两个路径都可注入、这一层不碰任何
+  系统调用，22 条用例不需要真容器就能在任何平台跑完。`batch` 启动时向 stderr 打一行 `* gate: …`，说清每
+  个数字各自来自哪个口径。512MB/1 核笼子实测 503MB、1 worker；同一个笼子里只读挂载根仍报 14.6GB。
 - **linux-x64 NativeAOT**：新增 `AotLinuxX64` 发布配置，发布流水线能在既有 win-x64 之外产出 Linux 单文件
   原生二进制。平台 P/Invoke 由运行时判断守卫，linker 据此裁掉非目标平台代码。实测 AOT 二进制跑一次完整
   `batch`，产物与 JIT 构建逐字节一致。

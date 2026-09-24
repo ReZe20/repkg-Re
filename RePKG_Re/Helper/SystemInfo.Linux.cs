@@ -36,18 +36,34 @@ namespace RePKG_Re
         [DllImport("libc")]
         private static extern int malloc_trim(nuint pad);
 
-        private static long AvailablePhysicalLinux()
+        private static long AvailablePhysicalLinux() => ReadAvailableLinux().Bytes;
+
+        /// <summary>
+        /// 主机口径与 cgroup 限额取更严的那一侧。/proc/meminfo 报的是**整台机器**的空闲内存,
+        /// 容器里据此算并发会一路超发到被 OOM-kill(没有可读的错误,只有进程消失),所以限额
+        /// 存在且更低时必须用它。cgroup 读不到(宿主根组是 "max"/无控制器目录)则完全等于改动前。
+        /// </summary>
+        private static (long Bytes, string Source) ReadAvailableLinux()
+        {
+            var (host, hostSource) = HostAvailableLinux();
+            return CgroupLimits.TryReadMemoryAvail(out var cg, out var cgSource) && (host <= 0 || cg <= host)
+                ? (cg, cgSource)
+                : (host, hostSource);
+        }
+
+        /// <summary>主机口径:MemAvailable 优先,sysinfo(3) 兜底。</summary>
+        private static (long Bytes, string Source) HostAvailableLinux()
         {
             try
             {
                 if (TryReadMemAvailable(out var bytes))
-                    return bytes;
+                    return (bytes, "MemAvailable");
 
                 var si = new sysinfo_t();
                 if (sysinfo(ref si) == 0)
                 {
                     long unit = si.mem_unit == 0 ? 1 : si.mem_unit;
-                    return (long)si.freeram * unit;
+                    return ((long)si.freeram * unit, "sysinfo");
                 }
             }
             catch
@@ -55,7 +71,7 @@ namespace RePKG_Re
                 // /proc 不可读 / 非 glibc:退化为 0,调用方保守处理
             }
 
-            return 0;
+            return (0, "unavailable");
         }
 
         private static bool TryReadMemAvailable(out long bytes)

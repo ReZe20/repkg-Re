@@ -82,12 +82,16 @@ repkg batch --manifest manifest.json [--threads 8]
 ```
 `--threads` overrides the manifest `threads`; when it is 0 the manifest value is used, and when that
 is 0 as well the worker count falls back to the physical core count (hyper-threading adds no
-throughput here and doubles memory). Failures never stop a batch: each one is reported as a JSON
+throughput here and doubles memory) — narrowed to the cgroup CPU quota when the kernel gives one.
+Failures never stop a batch: each one is reported as a JSON
 event on stdout and the next wallpaper is started. A finished batch always exits 0; only a missing
 or invalid manifest exits 1.
 
 Progress is reported as one JSON object per line on stdout (wallpaper start/done, entry, error,
 batch done); the batch continues on errors and always exits 0 unless the manifest is invalid.
+stdout carries nothing but those events — the single diagnostic line a run prints
+(`* gate: avail=503MB (cgroup v2:/user.slice/…) threads=1 (cgroup v2 cpu.max:…)`) goes to stderr,
+which is how you tell whether the memory gate is seeing the container's limit or the host's.
 - pack - packs a wallpaper project directory (the loose files the editor works on) back into a PKG
 ```
 -o, --output <DIR>       Directory for the produced .pkg (default: ./output)
@@ -114,7 +118,7 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | Key | Type | Default | Meaning | CLI equivalent |
 | --- | --- | --- | --- | --- |
 | `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg`; `pkg` = convert a mobile package back to a PC `.pkg`; `pack` = pack a project directory into a PC `.pkg` (see below) | - |
-| `threads` | int | 0 | worker threads, 0 = physical core count | `--threads` (wins over this) |
+| `threads` | int | 0 | worker threads, 0 = physical core count (narrowed by the cgroup CPU quota) | `--threads` (wins over this) |
 | `wallpapers` | array | - | jobs, one item per wallpaper; required | - |
 | `wallpapers[].id` | string | - | echoed back in every event of this wallpaper | - |
 | `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them; `mode: pack` wants a project directory instead (or a parent of several) | `<input>` |

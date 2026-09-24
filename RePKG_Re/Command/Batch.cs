@@ -36,9 +36,21 @@ namespace RePKG_Re.Command
 
             var manifest = BatchManifest.Load(options.Manifest);
 
-            int threads = options.Threads > 0 ? options.Threads
-                : manifest.Threads > 0 ? manifest.Threads
-                : ProcessorInfo.GetPhysicalProcessorCount(); // 物理核数:超线程无吞吐收益,只翻倍内存
+            int threads;
+            string threadSource;
+            if (options.Threads > 0) { threads = options.Threads; threadSource = "--threads"; }
+            else if (manifest.Threads > 0) { threads = manifest.Threads; threadSource = "manifest.threads"; }
+            else
+            {
+                threads = ProcessorInfo.GetPhysicalProcessorCount(); // 物理核数:超线程无吞吐收益,只翻倍内存
+                threadSource = ProcessorInfo.DescribeCountSource();
+            }
+
+            // 一次性读数,说清闸和线程数各自看到的是哪个口径:容器里被 cgroup 压住时,没有这行就分不清
+            // "机器真没内存"和"闸用的是宿主口径"。走 stderr —— stdout 是 batch 的 JSON 事件协议。
+            Console.Error.WriteLine(
+                $"* gate: avail={Math.Max(0, SystemInfo.GetAvailablePhysicalMemory() / (1024 * 1024))}MB"
+                + $" ({SystemInfo.DescribeMemorySource()}) threads={threads} ({threadSource})");
 
             if (manifest.IsMpkg)
             {

@@ -69,6 +69,8 @@ namespace RePKG_Re
             var avail = SystemInfo.GetAvailablePhysicalMemory();
             // 查询失败(0)保留上次值:与 Windows 原语义一致(失败时 _availPhys 不变);
             // 从未成功过则维持 0 → 预算 0 → TryAcquire 重试耗尽放行(退化无闸,不死锁)。
+            // 注意 0 在这里是"失败"的暗号,所以"已经用完"不能报 0 —— cgroup 那侧算出非正数时
+            // 由 CgroupLimits.CommitAvail 钳成 1,别改成返回 0,那会让闸攥着上次的大值。
             if (avail > 0)
                 Interlocked.Exchange(ref _availPhys, avail);
         }

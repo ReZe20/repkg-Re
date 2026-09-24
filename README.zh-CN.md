@@ -74,11 +74,15 @@ PKG 与 TEX 格式均由作者逆向得出。
 repkg batch --manifest manifest.json [--threads 8]
 ```
 `--threads` 覆盖清单里的 `threads`；它为 0 时使用清单值，清单值也为 0 时，工作线程数回退到物理核心数
-（超线程在这里不增加吞吐，只会让内存占用翻倍）。失败从不中断批次：每个失败都会在 stdout 上报告为一条
+（超线程在这里不增加吞吐，只会让内存占用翻倍），内核给了 cgroup CPU 配额时再按配额收窄。失败从不中断
+批次：每个失败都会在 stdout 上报告为一条
 JSON 事件，然后启动下一个壁纸。正常跑完的批次始终以 0 退出；只有清单缺失或非法时才以 1 退出。
 
 进度以每行一个 JSON 对象的形式输出到 stdout（壁纸开始/完成、entry、error、批次完成）；
 批次遇到错误会继续，除清单非法外始终以 0 退出。
+stdout 上只有这些事件 —— 每次运行打的那一行诊断
+（`* gate: avail=503MB (cgroup v2:/user.slice/…) threads=1 (cgroup v2 cpu.max:…)`）走 stderr，
+它就是用来分辨内存闸看到的是容器限额还是宿主余量的。
 - pack - 把壁纸工程目录（编辑器操作的那些散文件）打回 PKG
 ```
 -o, --output <DIR>       .pkg 的输出目录（默认 ./output）
@@ -102,7 +106,7 @@ JSON 事件，然后启动下一个壁纸。正常跑完的批次始终以 0 退
 | 键 | 类型 | 默认值 | 含义 | 对应 CLI 选项 |
 | --- | --- | --- | --- | --- |
 | `mode` | string | `extract` | `extract` = 解包成文件；`mpkg` = 把包重写为移动端 `.mpkg`；`pkg` = 把移动端包转回 PC `.pkg`；`pack` = 把工程目录打成 PC `.pkg`（见下文） | - |
-| `threads` | int | 0 | 工作线程数，0 = 物理核心数 | `--threads`（优先生效） |
+| `threads` | int | 0 | 工作线程数，0 = 物理核心数（有 cgroup CPU 配额时按配额收窄） | `--threads`（优先生效） |
 | `wallpapers` | array | - | 任务列表，每项一个壁纸；必填 | - |
 | `wallpapers[].id` | string | - | 该壁纸的每条事件里都会原样回显 | - |
 | `wallpapers[].input` | string | - | 一个 `.pkg`/`.mpkg` 文件，或一个被递归搜索的目录；`mode: pack` 要的是工程目录（或多个工程目录的父目录） | `<input>` |

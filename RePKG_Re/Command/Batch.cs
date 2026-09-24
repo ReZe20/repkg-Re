@@ -59,6 +59,14 @@ namespace RePKG_Re.Command
                 return;
             }
 
+            if (manifest.IsPack)
+            {
+                // 工程目录 → PC 包。输入是目录不是包(一个目录 = 一个 .pkg),所以又是独立执行器。
+                new PackRunner(manifest.ToPackOptions(), threads).Run(manifest.Wallpapers);
+                Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
+                return;
+            }
+
             var ctx = new ExtractContext(manifest.ToExtractOptions());
             var runner = new BatchRunner(ctx, manifest.Wallpapers, threads);
             runner.Run();

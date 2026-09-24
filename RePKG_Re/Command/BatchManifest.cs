@@ -17,12 +17,17 @@ namespace RePKG_Re.Command
         /// <summary>最大线程数(0 = CPU 核心数;Phase 1 生效)</summary>
         public int Threads { get; set; }
 
-        /// <summary>"extract"(默认,拆包成文件) | "mpkg"(整包转移动包) | "pkg"(移动包转回 PC 包)。三者执行器不同。</summary>
+        /// <summary>
+        /// "extract"(默认,拆包成文件) | "mpkg"(整包转移动包) | "pkg"(移动包转回 PC 包) |
+        /// "pack"(反过来:把壁纸工程的散文件打成 PC 包)。四者执行器不同。
+        /// </summary>
         public string Mode { get; set; }
 
         public bool IsMpkg => string.Equals(Mode, "mpkg", StringComparison.OrdinalIgnoreCase);
 
         public bool IsPkg => string.Equals(Mode, "pkg", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsPack => string.Equals(Mode, "pack", StringComparison.OrdinalIgnoreCase);
 
         public List<BatchWallpaper> Wallpapers { get; set; }
 
@@ -107,7 +112,11 @@ namespace RePKG_Re.Command
                     MpkgNoShaderCompat = LegacyJson.AsBool(GetProp(o, "mpkgNoShaderCompat")) ?? false,
                     PkgMagic = LegacyJson.AsString(GetProp(o, "pkgMagic")),
                     NoDematerialize = LegacyJson.AsBool(GetProp(o, "noDematerialize")) ?? false,
-                    KeepReductionKey = LegacyJson.AsBool(GetProp(o, "keepReductionKey")) ?? false
+                    KeepReductionKey = LegacyJson.AsBool(GetProp(o, "keepReductionKey")) ?? false,
+                    PackKeepSourceImages = LegacyJson.AsBool(GetProp(o, "packKeepSourceImages")) ?? false,
+                    PackNoEncode = LegacyJson.AsBool(GetProp(o, "packNoEncode")) ?? false,
+                    PackNoLooseMetadata = LegacyJson.AsBool(GetProp(o, "packNoLooseMetadata")) ?? false,
+                    PackExcludePaths = LegacyJson.ToStringArray(GetProp(o, "packExcludePaths"))
                 };
             }
 
@@ -118,9 +127,10 @@ namespace RePKG_Re.Command
 
         private void Validate()
         {
-            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !IsPkg && !Mode.Equals("extract", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !IsPkg && !IsPack &&
+                !Mode.Equals("extract", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg|pkg)");
+                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg|pkg|pack)");
                 Environment.Exit(1);
             }
 
@@ -205,6 +215,26 @@ namespace RePKG_Re.Command
             };
         }
 
+        /// <summary>
+        /// manifest 选项 → 打包(mode=pack)选项。输出文件名主干走每条壁纸自己的 outputName，
+        /// 与 mode=mpkg 同一套机制，所以这里没有 name 字段。
+        /// </summary>
+        public PackOptions ToPackOptions()
+        {
+            var o = Options ?? new BatchOptionsModel();
+            return new PackOptions
+            {
+                Magic = string.IsNullOrWhiteSpace(o.PkgMagic) ? "PKGV0018" : o.PkgMagic,
+                Overwrite = o.Overwrite,
+                KeepSourceImages = o.PackKeepSourceImages,
+                NoEncodeImages = o.PackNoEncode,
+                NoLooseMetadata = o.PackNoLooseMetadata,
+                ExcludePaths = o.PackExcludePaths == null || o.PackExcludePaths.Length == 0
+                    ? null
+                    : string.Join(",", o.PackExcludePaths)
+            };
+        }
+
         private static string Join(string[] array)
             => array == null || array.Length == 0 ? null : string.Join(",", array);
     }
@@ -217,14 +247,16 @@ namespace RePKG_Re.Command
         /// <summary>
         /// 输入路径,兼容文件与目录:单个 .pkg/.mpkg 文件 → 只拆该文件;
         /// 目录 → 递归枚举目录内所有 pkg/mpkg 一并拆出。
+        /// mode = "pack" 时语义反过来:输入必须是**壁纸工程目录**(里面直接放着 project.json),
+        /// 或装着多个工程目录的父目录(此时每个子目录各出一个包),不递归到第三层。
         /// </summary>
         public string Input { get; set; }
 
         public string Output { get; set; }
 
         /// <summary>
-        /// 仅 mode = "mpkg" 生效:输出 .mpkg 的文件名主干(不含扩展名),让调用方按壁纸标题或创意工坊 ID 命名。
-        /// 留空 = 用源包文件名。非法文件名字符由 repkg 清洗,不假定调用方 sanitize 过。
+        /// 仅 mode = "mpkg"/"pkg"/"pack" 生效:输出包的文件名主干(不含扩展名),让调用方按壁纸标题或创意工坊 ID 命名。
+        /// 留空 = 用源包文件名(pack 没有源包,留空 = 用工程目录名)。非法文件名字符由 repkg 清洗,不假定调用方 sanitize 过。
         /// </summary>
         public string OutputName { get; set; }
     }
@@ -297,5 +329,19 @@ namespace RePKG_Re.Command
 
         /// <summary>true = 保留 scene.json 的 texturereduction 键(默认删,与正向成对)</summary>
         public bool KeepReductionKey { get; set; }
+
+        // ---------- 以下仅 mode = "pack"(工程目录 → PC 包)生效 ----------
+
+        /// <summary>true = 源图也一起进包(默认只带 .tex)。排查"包里为什么没有我那张图"时才开。</summary>
+        public bool PackKeepSourceImages { get; set; }
+
+        /// <summary>true = 不把源图封成直通 .tex，源图原样进包。</summary>
+        public bool PackNoEncode { get; set; }
+
+        /// <summary>true = 不把 project.json/预览图作为同级 loose 文件写到输出目录。</summary>
+        public bool PackNoLooseMetadata { get; set; }
+
+        /// <summary>额外排除的相对路径前缀(如 "samplemedia,docs")。</summary>
+        public string[] PackExcludePaths { get; set; }
     }
 }

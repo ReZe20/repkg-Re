@@ -17,6 +17,7 @@ Feel free to report errors.
 # Features
 - Extract PKG files
 - Convert PKG into wallpaper engine project
+- Convert a wallpaper project directory back into a PKG
 - Convert TEX to image
 - Dump PKG/TEX info
 - Batch mode: convert PC packages into mobile `.mpkg` packages, and back
@@ -74,8 +75,8 @@ but not yet verified on real hardware.
                           (case-insensitive)
 ```
 - batch - runs many wallpapers in one process, driven by a JSON manifest; `mode` selects unpacking
-  them to files (`extract`), rewriting them as mobile packages (`mpkg`), or converting mobile
-  packages back to PC ones (`pkg`)
+  them to files (`extract`), rewriting them as mobile packages (`mpkg`), converting mobile
+  packages back to PC ones (`pkg`), or packing a project directory into a PC package (`pack`)
 ```
 repkg batch --manifest manifest.json [--threads 8]
 ```
@@ -87,6 +88,24 @@ or invalid manifest exits 1.
 
 Progress is reported as one JSON object per line on stdout (wallpaper start/done, entry, error,
 batch done); the batch continues on errors and always exits 0 unless the manifest is invalid.
+- pack - packs a wallpaper project directory (the loose files the editor works on) back into a PKG
+```
+-o, --output <DIR>       Directory for the produced .pkg (default: ./output)
+-n, --name <NAME>        File name stem of the produced .pkg (default: project folder name)
+--magic <MAGIC>          Package magic to write (default PKGV0018)
+--overwrite              Overwrite an existing target PKG instead of writing name_1.pkg
+--keep-source-images     Also pack the source images alongside their .tex (real WE packages
+                         carry none)
+--no-tex-encode          Do not wrap source images into a passthrough .tex; ship them as their
+                         own entries
+--no-loose-metadata      Do not copy project.json / the preview image next to the produced .pkg
+--excludepaths <PREFIXES>
+                         Also skip these relative path prefixes (comma-delimited)
+```
+`<input>` is either a project directory (it holds `project.json`, `scene.json`, `index.html` or
+`assets.json` at its root) or a directory whose subfolders are projects — in the latter case every
+subfolder is packed on its own. Several projects sharing one output directory is supported; see
+`mode: "pack"` below for what happens to their `project.json`.
 
 #### Manifest schema
 
@@ -94,13 +113,13 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 
 | Key | Type | Default | Meaning | CLI equivalent |
 | --- | --- | --- | --- | --- |
-| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg`; `pkg` = convert a mobile package back to a PC `.pkg` (see below) | - |
+| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg`; `pkg` = convert a mobile package back to a PC `.pkg`; `pack` = pack a project directory into a PC `.pkg` (see below) | - |
 | `threads` | int | 0 | worker threads, 0 = physical core count | `--threads` (wins over this) |
 | `wallpapers` | array | - | jobs, one item per wallpaper; required | - |
 | `wallpapers[].id` | string | - | echoed back in every event of this wallpaper | - |
-| `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them | `<input>` |
+| `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them; `mode: pack` wants a project directory instead (or a parent of several) | `<input>` |
 | `wallpapers[].output` | string | - | output directory for this wallpaper | `--output` |
-| `wallpapers[].outputName` | string | source package name | `mode: mpkg` / `mode: pkg` - file name (without extension) of the produced `.mpkg`/`.pkg`; invalid characters are replaced with `_`, and a wallpaper that yields several packages gets `_<source-name>` appended so they don't overwrite each other | - |
+| `wallpapers[].outputName` | string | source package name (pack: project folder name) | `mode: mpkg` / `mode: pkg` / `mode: pack` - file name (without extension) of the produced `.mpkg`/`.pkg`; invalid characters are replaced with `_`, and a wallpaper that yields several packages gets `_<source-name>` appended so they don't overwrite each other | `-n, --name` (pack) |
 | `options.overwrite` | bool | false | overwrite existing files | `--overwrite` |
 | `options.onlypaths` | string[] | none | directory prefixes to keep | `--onlypaths` |
 | `options.ignorepaths` | string[] | none | directory prefixes to drop | `--ignorepaths` |
@@ -119,9 +138,69 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.mpkgReduction` | int | 1 | `mode: mpkg` only - texture downscale divisor (WE's 2x / 4x presets). Only entries that get materialized are resized; the size is also recorded as `"texturereduction"` in the scene file | - |
 | `options.mpkgEtc2` | bool | false | `mode: mpkg` only - emit reduced pixels as ETC2 RGBA8 (`format=5`, 1 byte/pixel) instead of RGBA8. Requires `mpkgReduction > 1`; not yet verified on a phone, hence off by default | - |
 | `options.mpkgNoShaderCompat` | bool | false | `mode: mpkg` only - `true` turns off the GLSL → GLSL ES rewrite that appends `.0` to integer literals sitting in a float context. Mobile GLSL has no implicit int→float, so a shader that fails to compile makes its material fall back to the base texture and the layer shows up as a plain white rectangle. Every rewrite is reported per package as `着色器改写 N条/M处` | - |
-| `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` only - magic written into the output PC package | - |
+| `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` and `mode: pack` - magic written into the output PC package | `--magic` (pack) |
 | `options.noDematerialize` | bool | false | `mode: pkg` only - `true` copies materialized RGBA8 textures verbatim instead of re-encoding them back to a PNG passthrough blob (useful when debugging the reverse path) | - |
 | `options.keepReductionKey` | bool | false | `mode: pkg` only - `true` keeps the `"texturereduction"` key in `scene.json` instead of removing it | - |
+| `options.packKeepSourceImages` | bool | false | `mode: pack` only - also pack source images next to their `.tex` | `--keep-source-images` |
+| `options.packNoEncode` | bool | false | `mode: pack` only - don't wrap source images into a passthrough `.tex` | `--no-tex-encode` |
+| `options.packNoLooseMetadata` | bool | false | `mode: pack` only - don't copy `project.json` / the preview next to the produced `.pkg` | `--no-loose-metadata` |
+| `options.packExcludePaths` | string[] | none | `mode: pack` only - extra relative path prefixes to skip | `--excludepaths` |
+
+#### mode: "pack" - packing a project directory back into a PC package
+
+```
+{ "mode": "pack", "wallpapers": [ { "id": "1", "input": "D:/WE/projects/myprojects/my wp", "output": "D:/share", "outputName": "my wp" } ] }
+```
+
+The inverse of `extract`: the input is a **directory of loose files**, not a package, so there is no
+source entry table to copy — the plan is built from a directory walk. The container is written the
+same way the other two pack modes write it (one pass, offsets patched afterwards, nothing is ever
+buffered as a whole package), entries are named with forward slashes relative to the project root,
+and the produced file satisfies the same invariant the reader checks: table size + Σ entry lengths
+= file size.
+
+`wallpapers[].input` may be the project directory itself (it holds `project.json`, `scene.json`,
+`index.html` or `assets.json`) or a parent of several — then every project subfolder is packed
+separately. It is deliberately not recursed deeper: effect packages legitimately contain
+`preview/project.json`, and treating that as a new wallpaper would invent wallpapers out of
+sub-assets.
+
+What goes in, and what does not, is decided from a census of 279 real local packages (8152 `.tex`
+entries): the complete extension set inside a real WE package is `json / tex / frag / vert / mdl /
+mp3 / ttf / otf / wav / ogg / flac / ttc / gif`. There is **no** `png`, `jpg`, `tga`, `obj`, `mtl`,
+`dxs`, `tex-json`, `pkg`, or `mpkg` entry, and no `project.json` / preview entry either. So:
+
+- a source image with a same-named `.tex` next to it is dropped and the `.tex` is packed verbatim —
+  that `.tex` is what the editor compiled, so it is closer to the original than anything we could
+  re-encode.
+- a source image with **no** `.tex` is wrapped into a **passthrough `.tex`** (`TEXB0004`,
+  `imageFormat = FIF_PNG`/`FIF_JPEG`, one mip, payload = the image file's own bytes, never
+  re-encoded). This is not an invented shape: 1348 of the surveyed textures are exactly that,
+  shipped by WE itself. Header flags are taken from the `<name>.tex-json` import-settings sidecar
+  when one is there, because `clampuvs` decides whether the GPU samples across the edge.
+- `.obj`/`.mtl` are dropped when a same-named `.mdl` exists; without one they are packed as-is and
+  reported (there is no `.mdl` writer).
+- `.tex-json`, `*.dxs` and `shaders/blobsSM*/` (the editor's compiled-shader cache), other
+  `.pkg`/`.mpkg` files found inside the tree, `project.json` and the preview image are never
+  packed.
+- `project.json` and the preview image are written **next to** the `.pkg` instead, which is the
+  layout Workshop subscription folders use and what makes the output folder loadable. Two projects
+  packed into the same output directory both want a `project.json` there, so the second one is not
+  overwritten — it is reported as an error event. Pass `--no-loose-metadata` to skip the copies.
+- An existing target of the same name is never overwritten: `scene.pkg` → `scene_1.pkg` → …
+  (pointing the output at a subscription folder would otherwise destroy a Steam-downloaded original
+  and make WE re-download it on the next integrity check). `--overwrite` opts in.
+
+Two things to know about the produced package:
+
+- **Textures we compile ourselves are bigger than the editor's.** A passthrough PNG blob costs what
+  the PNG costs, while the editor's DXT5 is 1 byte/pixel (4K: 8 MB against 33 MB uploaded). Every
+  such texture is counted in the `封纹理 N` report line. Encoding to DXT1/DXT5 would need a new
+  block compressor — see the class comment on `PassthroughTexBuilder`, and the `--no-tex-encode` switch if
+  you would rather see the raw image entry than a texture you did not ask for.
+- **A same-named `.tex` that the editor has not refreshed after an image edit is shipped as-is.**
+  The packer compares file names, not image content, so it cannot notice that `foo.png` changed
+  after `foo.tex` was compiled. WE itself renders from the `.tex`, so this matches the editor.
 
 #### mode: "mpkg" - converting a PC package into a mobile one
 

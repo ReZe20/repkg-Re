@@ -22,8 +22,67 @@ namespace RePKG_Re.Cli
             root.Add(BuildExtract());
             root.Add(BuildInfo());
             root.Add(BuildBatch());
+            root.Add(BuildPack());
 
             return root;
+        }
+
+        /// <summary>
+        /// pack:壁纸工程的散文件 → .pkg(extract 的反向)。
+        /// 排除规则写在 LoosePackageBuilder 的类注释里(判据是本地 279 个真实包的条目普查),
+        /// 这里只暴露开关,不在命令行上重复那套规则。
+        /// </summary>
+        private static System.CommandLine.Command BuildPack()
+        {
+            var cmd = new System.CommandLine.Command("pack",
+                "Pack a wallpaper project directory (loose files) back into a PKG");
+
+            var input = new Argument<string>("input")
+            {
+                Description = "Wallpaper project directory (the one holding project.json), or a parent of several"
+            };
+            cmd.Add(input);
+
+            var output = Opt<string>("--output", "-o", "Directory for the produced .pkg", "DIR");
+            output.DefaultValueFactory = _ => "./output";
+            var name = Opt<string>("--name", "-n", "File name stem for the produced .pkg (default: project folder name)", "NAME");
+            var magic = Opt<string>("--magic", null, "Package magic to write (default PKGV0018)", "MAGIC");
+            var overwrite = Flag("--overwrite", null, "Overwrite an existing target PKG instead of writing name_1.pkg");
+            var keepImages = Flag("--keep-source-images", null,
+                "Also pack the source images alongside their .tex (real WE packages carry none)");
+            var noEncode = Flag("--no-tex-encode", null,
+                "Do not wrap source images into passthrough .tex; ship them as their own entries");
+            var noLoose = Flag("--no-loose-metadata", null, "Do not copy project.json / preview next to the produced .pkg");
+            var exclude = Opt<string>("--excludepaths", null,
+                "Also skip these relative path prefixes (comma-delimited)", "PREFIXES");
+
+            cmd.Add(output);
+            cmd.Add(name);
+            cmd.Add(magic);
+            cmd.Add(overwrite);
+            cmd.Add(keepImages);
+            cmd.Add(noEncode);
+            cmd.Add(noLoose);
+            cmd.Add(exclude);
+
+            cmd.SetAction(pr =>
+            {
+                Pack.Action(new PackOptions
+                {
+                    Input = pr.GetValue(input) ?? string.Empty,
+                    OutputDirectory = pr.GetValue(output),
+                    Name = pr.GetValue(name),
+                    Magic = pr.GetValue(magic),
+                    Overwrite = pr.GetValue(overwrite),
+                    KeepSourceImages = pr.GetValue(keepImages),
+                    NoEncodeImages = pr.GetValue(noEncode),
+                    NoLooseMetadata = pr.GetValue(noLoose),
+                    ExcludePaths = pr.GetValue(exclude)
+                });
+                return 0;
+            });
+
+            return cmd;
         }
 
         private static System.CommandLine.Command BuildExtract()

@@ -176,8 +176,15 @@ namespace RePKG_Re.Command
         /// 正向(mpkg)与逆向(pkg)共用,清洗逻辑必须只有一份(见 Extensions.IsInvalidFileNameChar)。
         /// </summary>
         internal static string ResolveStem(BatchWallpaper wallpaper, FileInfo pkg, bool multiple)
+            => ResolveStem(wallpaper, Path.GetFileNameWithoutExtension(pkg.Name), multiple);
+
+        /// <summary>
+        /// 字符串版给 mode=pack 用：打包的输入是一个目录，没有"文件名去掉扩展名"这一步，
+        /// 主干就是工程目录名。清洗规则只有一份(见 Extensions.IsInvalidFileNameChar)。
+        /// </summary>
+        internal static string ResolveStem(BatchWallpaper wallpaper, string sourceStem, bool multiple)
         {
-            var source = Path.GetFileNameWithoutExtension(pkg.Name);
+            var source = sourceStem ?? "";
             var name = (wallpaper.OutputName ?? "").Trim();
             if (name.Length == 0) return source;
 

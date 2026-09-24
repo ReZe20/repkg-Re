@@ -23,6 +23,19 @@
   `SceneJsonPatcher.RemoveTextureReduction`). Everything else is copied byte for byte. The shader
   `.0` rewrite is intentionally not undone (not reliably reversible and valid on PC). See the
   README `mode: "pkg"` section for the full semantics and limits.
+- **Project directory → `pkg` (packing)**: new `pack` command and batch `mode: "pack"`
+  (`LoosePackageBuilder` + `PackRunner`), the inverse of `extract`. Input is a directory of loose
+  wallpaper files (the editor's project folder, or a parent of several), output is one `.pkg` per
+  project with `project.json` and the preview image written next to it, which is the Workshop
+  subscription layout. Entry selection is derived from a census of 279 real local packages rather
+  than guessed: the extension set inside a real WE package contains no `png`/`jpg`/`tga`/`obj`/
+  `mtl`/`dxs`/`.tex-json`/`project.json`, so source images are dropped when a same-named `.tex`
+  exists and are otherwise wrapped into a **passthrough `.tex`** (new `PassthroughTexBuilder`;
+  `TEXB0004` + `imageFormat = FIF_PNG`/`FIF_JPEG`, one mip, payload = the image file's own bytes),
+  the form 1348 surveyed textures actually use; `.tex-json`, the `blobsSM*` shader cache and nested
+  packages are excluded; an existing target is never overwritten (`scene.pkg` → `scene_1.pkg`).
+  Events use the same protocol as `extract`/`mpkg`/`pkg`. See the README `mode: "pack"` section for
+  the full rules and for the one open trade-off (textures we compile are PNG-sized, not DXT-sized).
 - **Filename sanitizing is now cross-platform-deterministic**: the mobile output-name and
   use-name paths use a fixed Windows-semantics invalid-character set
   (`Extensions.InvalidFileNameChars`) instead of the platform-dependent
@@ -81,6 +94,16 @@
   直通 blob，并从 `scene.json` 删除 `texturereduction` 键（新增 `SceneJsonPatcher.RemoveTextureReduction`）。
   其余条目逐字节搬运。着色器 `.0` 改写刻意不逆（不可靠还原且 PC 端合法）。完整语义与限制见 README 的
   `mode: "pkg"` 章节。
+- **工程目录 → `pkg`（打包）**：新增 `pack` 命令与 batch `mode: "pack"`（`LoosePackageBuilder` +
+  `PackRunner`），是 `extract` 的反向。输入是一堆壁纸散文件（编辑器的工程目录，或装着多个工程的父目录），
+  输出是每个工程一个 `.pkg`，并把 `project.json` 与预览图写到它旁边 —— 工坊订阅目录就是这个布局。
+  条目取舍不靠猜，判据来自本地 279 个真实包的条目普查：真实 WE 包的扩展名全集里没有 `png`/`jpg`/`tga`/
+  `obj`/`mtl`/`dxs`/`.tex-json`/`project.json`。所以源图在有同名 `.tex` 时被丢掉，没有的封成**直通
+  `.tex`**（新增 `PassthroughTexBuilder`；`TEXB0004` + `imageFormat = FIF_PNG`/`FIF_JPEG`、单级 mip、
+  载荷就是那张图的原字节），也就是普查里 1348 条纹理在用的那种形态；`.tex-json`、`blobsSM*` 着色器缓存、
+  目录树里套着的包一律排除；同名目标不覆盖（`scene.pkg` → `scene_1.pkg`）。事件协议与
+  `extract`/`mpkg`/`pkg` 一致。完整规则，以及那条还没解决的取舍（我们自己封的纹理是 PNG 的体积、不是 DXT
+  的体积），见 README 的 `mode: "pack"` 章节。
 - **文件名清洗跨平台确定化**：移动输出名与 usename 路径改用固定的 Windows 语义非法字符集
   （`Extensions.InvalidFileNameChars`），不再用随平台变化的 `Path.GetInvalidFileNameChars()`，同一壁纸
   标题在各平台得到同一文件名（此前是真实分歧——Linux 上 `:`/`?` 原本不会被替换）。

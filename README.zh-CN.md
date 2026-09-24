@@ -18,6 +18,7 @@ PKG 与 TEX 格式均由作者逆向得出。
 # 功能
 - 解包 PKG 文件
 - 将 PKG 转换为 Wallpaper Engine 工程
+- 将壁纸工程目录（散文件）打回 PKG
 - 将 TEX 转换为图片
 - 输出 PKG/TEX 信息
 - 批处理模式：把 PC 包转换为移动端 `.mpkg` 包，以及反向转换
@@ -68,7 +69,7 @@ PKG 与 TEX 格式均由作者逆向得出。
 --title-filter <TEXT>     只列出 project.json 标题包含该文本的包（不区分大小写）
 ```
 - batch - 由一个 JSON 清单驱动，在一个进程里跑多个壁纸；`mode` 选择把壁纸解包成文件（`extract`）、
-  重写为移动端包（`mpkg`），还是把移动端包转回 PC 包（`pkg`）
+  重写为移动端包（`mpkg`）、把移动端包转回 PC 包（`pkg`），还是把工程目录打成 PC 包（`pack`）
 ```
 repkg batch --manifest manifest.json [--threads 8]
 ```
@@ -78,6 +79,21 @@ JSON 事件，然后启动下一个壁纸。正常跑完的批次始终以 0 退
 
 进度以每行一个 JSON 对象的形式输出到 stdout（壁纸开始/完成、entry、error、批次完成）；
 批次遇到错误会继续，除清单非法外始终以 0 退出。
+- pack - 把壁纸工程目录（编辑器操作的那些散文件）打回 PKG
+```
+-o, --output <DIR>       .pkg 的输出目录（默认 ./output）
+-n, --name <NAME>        产出的 .pkg 的文件名主干（默认用工程目录名）
+--magic <MAGIC>          写入包的 magic（默认 PKGV0018）
+--overwrite              同名目标已存在时覆盖，而不是改写 name_1.pkg
+--keep-source-images     源图与它的 .tex 一起进包（真实 WE 包里一条源图都没有）
+--no-tex-encode          不把源图封成直通 .tex，源图作为自己的条目进包
+--no-loose-metadata      不把 project.json / 预览图拷到产出的 .pkg 旁边
+--excludepaths <PREFIXES>
+                         额外排除的相对路径前缀（逗号分隔）
+```
+`<input>` 既可以是工程目录本身（根目录下有 `project.json`、`scene.json`、`index.html` 或
+`assets.json`），也可以是装着多个工程目录的父目录 —— 后者每个子目录各打一个包。多个工程共用一个输出目录
+是支持的；它们的 `project.json` 会怎样，见下文 `mode: "pack"`。
 
 #### 清单（manifest）结构
 
@@ -85,11 +101,11 @@ JSON 事件，然后启动下一个壁纸。正常跑完的批次始终以 0 退
 
 | 键 | 类型 | 默认值 | 含义 | 对应 CLI 选项 |
 | --- | --- | --- | --- | --- |
-| `mode` | string | `extract` | `extract` = 解包成文件；`mpkg` = 把包重写为移动端 `.mpkg`；`pkg` = 把移动端包转回 PC `.pkg`（见下文） | - |
+| `mode` | string | `extract` | `extract` = 解包成文件；`mpkg` = 把包重写为移动端 `.mpkg`；`pkg` = 把移动端包转回 PC `.pkg`；`pack` = 把工程目录打成 PC `.pkg`（见下文） | - |
 | `threads` | int | 0 | 工作线程数，0 = 物理核心数 | `--threads`（优先生效） |
 | `wallpapers` | array | - | 任务列表，每项一个壁纸；必填 | - |
 | `wallpapers[].id` | string | - | 该壁纸的每条事件里都会原样回显 | - |
-| `wallpapers[].input` | string | - | 一个 `.pkg`/`.mpkg` 文件，或一个被递归搜索的目录 | `<input>` |
+| `wallpapers[].input` | string | - | 一个 `.pkg`/`.mpkg` 文件，或一个被递归搜索的目录；`mode: pack` 要的是工程目录（或多个工程目录的父目录） | `<input>` |
 | `wallpapers[].output` | string | - | 该壁纸的输出目录 | `--output` |
 | `wallpapers[].outputName` | string | 源包名 | `mode: mpkg` / `mode: pkg` - 产出的 `.mpkg`/`.pkg` 文件名（不含扩展名）；非法字符替换为 `_`；产出多个包的壁纸会自动追加 `_<源包名>` 以免互相覆盖 | - |
 | `options.overwrite` | bool | false | 覆盖已存在的文件 | `--overwrite` |
@@ -110,9 +126,13 @@ JSON 事件，然后启动下一个壁纸。正常跑完的批次始终以 0 退
 | `options.mpkgReduction` | int | 1 | 仅 `mode: mpkg` - 纹理缩小倍数（WE 的 2x / 4x 预设）。只有被物化的条目会被缩放；该倍数同时以 `"texturereduction"` 记录进场景文件 | - |
 | `options.mpkgEtc2` | bool | false | 仅 `mode: mpkg` - 把缩小后的像素输出为 ETC2 RGBA8（`format=5`，1 字节/像素）而不是 RGBA8。要求 `mpkgReduction > 1`；尚未在手机真机验证，故默认关闭 | - |
 | `options.mpkgNoShaderCompat` | bool | false | 仅 `mode: mpkg` - `true` 关闭 GLSL → GLSL ES 重写（给浮点上下文中的整数字面量追加 `.0`）。移动端 GLSL 没有隐式 int→float，编译失败的着色器会让材质回退到底图，图层显示为纯白矩形。每次重写按包报告为 `着色器改写 N条/M处` | - |
-| `options.pkgMagic` | string | `PKGV0018` | 仅 `mode: pkg` - 写入输出 PC 包的 magic | - |
+| `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` 与 `mode: pack` - 写入输出 PC 包的 magic | `--magic`（pack） |
 | `options.noDematerialize` | bool | false | 仅 `mode: pkg` - `true` 时原样复制已物化的 RGBA8 纹理，而不是重新编码回 PNG 直通 blob（调试反向路径时有用） | - |
 | `options.keepReductionKey` | bool | false | 仅 `mode: pkg` - `true` 时保留 `scene.json` 中的 `"texturereduction"` 键而不是删除 | - |
+| `options.packKeepSourceImages` | bool | false | 仅 `mode: pack` - 源图与它的 `.tex` 一起进包 | `--keep-source-images` |
+| `options.packNoEncode` | bool | false | 仅 `mode: pack` - 不把源图封成直通 `.tex` | `--no-tex-encode` |
+| `options.packNoLooseMetadata` | bool | false | 仅 `mode: pack` - 不把 `project.json` / 预览图拷到产出的 `.pkg` 旁边 | `--no-loose-metadata` |
+| `options.packExcludePaths` | string[] | none | 仅 `mode: pack` - 额外排除的相对路径前缀 | `--excludepaths` |
 
 #### mode: "mpkg" - 把 PC 包转为移动端包
 
@@ -179,6 +199,49 @@ JSON 事件，然后启动下一个壁纸。正常跑完的批次始终以 0 退
 
 Wallpaper Engine *手机端导出*的包（区别于本工具产出的包）通常存的是 DXT 或仍为编码格式的纹理；
 对这类包，转换仅是容器层的 magic 替换，完全无损。
+
+#### mode: "pack" - 把工程目录打回 PC 包
+
+```
+{ "mode": "pack", "wallpapers": [ { "id": "1", "input": "D:/WE/projects/myprojects/my wp", "output": "D:/share", "outputName": "my wp" } ] }
+```
+
+`extract` 的反向：输入是**一个散文件目录**而不是包，所以没有"源条目表"可抄，条目计划改成一趟目录遍历。
+容器写出形态与另外两个打包模式一致（单遍写 + 回填偏移，绝不攒整包），条目名用相对工程根的正斜杠路径，
+产物满足读侧那道不变式：表大小 + Σ条目长度 = 文件大小。
+
+`wallpapers[].input` 可以是工程目录本身（根目录下有 `project.json`、`scene.json`、`index.html`
+或 `assets.json` 之一），也可以是装着多个工程目录的父目录 —— 后者每个子工程各出一个包。
+故意不再往里递归：效果包里本来就有一个 `preview/project.json`，递归会把它当成一张新壁纸。
+
+什么进包、什么不进，判据来自本地 279 个真实包的条目普查（8152 条 `.tex`）：真实 WE 包里的扩展名全集是
+`json / tex / frag / vert / mdl / mp3 / ttf / otf / wav / ogg / flac / ttc / gif`，
+**没有** `png`、`jpg`、`tga`、`obj`、`mtl`、`dxs`、`tex-json`、`pkg`、`mpkg`，也**没有**
+`project.json` 与预览图。于是：
+
+- 源图旁边有同名 `.tex` 就丢掉源图、把那份 `.tex` 逐字节搬进包 —— 它是编辑器自己编出来的，
+  比我们重封一遍更接近原件。
+- 没有 `.tex` 的源图封成一个**直通 .tex**（`TEXB0004` + `imageFormat = FIF_PNG`/`FIF_JPEG` +
+  单级 mip，载荷就是那张图的原字节，不重新编码）。这不是我们臆造的形态：普查里 1348 条纹理就是它，
+  WE 自己在发。旁边有 `<name>.tex-json` 导入设置时，头部标志位照它取 —— `clampuvs` 决定 GPU
+  会不会采样到隔壁。
+- `.obj`/`.mtl` 在有同名 `.mdl` 时丢掉；没有 `.mdl` 就原样带着并上报（我们没有 `.mdl` 写出器）。
+- `.tex-json`、`*.dxs` 与 `shaders/blobsSM*/`（编辑器的着色器编译缓存）、目录树里其它 `.pkg`/`.mpkg`、
+  `project.json` 与预览图一律不进包。
+- `project.json` 与预览图改为写到 `.pkg` **旁边**，这正是工坊订阅目录的布局，也是让输出目录能被直接
+  加载的形态。两个工程共用一个输出目录时都会去写那一份 `project.json`，所以后一个不覆盖、按 error
+  事件上报。`--no-loose-metadata` 可以完全跳过这几个拷贝。
+- 同名目标不覆盖：`scene.pkg` → `scene_1.pkg` → …（把输出目录指到订阅目录时，静默覆盖会毁掉
+  Steam 下载的原件，下一次完整性校验就整份重下）。要覆盖用 `--overwrite`。
+
+关于产物的两点须知：
+
+- **我们自己封的纹理比编辑器的大。** 直通 PNG blob 花的就是那张 PNG 的字节，而编辑器的 DXT5 是
+  1 字节/像素（4K：8MB 对 33MB）。每一张都计在 `封纹理 N` 这一列里。要发 DXT1/DXT5 需要新写一个块
+  压缩器（见 `PassthroughTexBuilder` 的类注释）；宁可看见原始图条目也不要一个自己没要过的纹理，
+  就用 `--no-tex-encode`。
+- **图片改过、但编辑器还没重编 `.tex` 时，进包的是那份旧 `.tex`。** 打包比的是文件名不是像素内容，
+  所以它察觉不到 `foo.png` 比 `foo.tex` 新。WE 自己渲染时读的也是 `.tex`，这一条与编辑器一致。
 
 清单格式（threads 为 0 = 物理核心数；options 与 extract 相同）：
 ```

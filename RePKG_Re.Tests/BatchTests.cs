@@ -10,6 +10,7 @@ using RePKG_Re.Application.Texture;
 using RePKG_Re.Command;
 using RePKG_Re.Core.Package;
 using RePKG_Re.Core.Texture;
+using SixLabors.ImageSharp;
 
 namespace RePKG_Re.Tests
 {
@@ -123,6 +124,7 @@ namespace RePKG_Re.Tests
             public string Id { get; }
             public int Pos { get; }
             public int TotalEntries { get; }
+            public string Msg { get; }
 
             private Ev(JsonElement e)
             {
@@ -131,6 +133,7 @@ namespace RePKG_Re.Tests
                 Id = Str(e, "id");
                 Pos = Int(e, "pos");
                 TotalEntries = Int(e, "total_entries");
+                Msg = Str(e, "msg");
             }
 
             public static Ev Parse(string json)
@@ -554,6 +557,75 @@ namespace RePKG_Re.Tests
             Assert.That(entryEvents, Is.EqualTo(new[] { 1, 2, 3 }));
             var start = events.First(e => e.Type == "wallpaper");
             Assert.That(start.TotalEntries, Is.EqualTo(3));
+        }
+
+        /// <summary>
+        /// mode=pack 走的是 batch 的进程协议：一个工程目录 = 一条 wallpaper 事件流，
+        /// start 带条目总数、条目事件按 id 打点、认不出工程只发 error 不炸整批。
+        /// 这三条前端都依赖(进度、按 id 路由、崩溃重启后的跳过)，所以按事件断言而不是只看产物。
+        /// </summary>
+        [Test]
+        public void Batch_Pack_EmitsSameProtocolAsExtract_And_WritesLooseSiblings()
+        {
+            var project = Path.Combine(_tempDir, "mywp");
+            Directory.CreateDirectory(Path.Combine(project, "materials"));
+            File.WriteAllText(Path.Combine(project, "project.json"), "{\"title\":\"mywp\",\"preview\":\"preview.gif\"}");
+            File.WriteAllText(Path.Combine(project, "scene.json"), "{}");
+            File.WriteAllBytes(Path.Combine(project, "preview.gif"), new byte[] { 1, 2, 3 });
+            File.WriteAllBytes(Path.Combine(project, "materials", "a.png"), Png(4, 4));
+
+            var other = Path.Combine(_tempDir, "notawallpaper");
+            Directory.CreateDirectory(other);
+            File.WriteAllText(Path.Combine(other, "readme.txt"), "x");
+
+            var output = Path.Combine(_tempDir, "packed");
+            var manifestPath = Path.Combine(_tempDir, "pack.json");
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(new
+            {
+                mode = "pack",
+                threads = 1,
+                wallpapers = new object[]
+                {
+                    new { id = "1", input = project, output, outputName = "My WP :D" },
+                    new { id = "2", input = other, output }
+                },
+                options = new { overwrite = false, pkgMagic = "PKGV0023" }
+            }));
+
+            var events = RunBatchAndCapture(manifestPath);
+
+            var starts = events.FindAll(e => e.Type == "wallpaper" && e.Action == "start");
+            Assert.That(starts, Has.Count.EqualTo(1), "认不出来的那个不该发 start");
+            Assert.That(starts[0].TotalEntries, Is.EqualTo(2), "scene.json + materials/a.tex");
+
+            Assert.That(events.FindAll(e => e.Type == "entry"), Has.Count.EqualTo(2));
+            var errors = events.FindAll(e => e.Type == "error");
+            Assert.That(errors, Has.Count.EqualTo(1));
+            Assert.That(errors[0].Msg, Contains.Substring("No wallpaper project"));
+            Assert.That(events.FindAll(e => e.Type == "wallpaper" && e.Action == "done"), Has.Count.EqualTo(2),
+                "失败的那条也要 done，否则前端的队列会卡住");
+
+            Assert.That(ListFiles(output), Is.EquivalentTo(new[] { "My WP _D.pkg", "preview.gif", "project.json" }),
+                "包与同级 loose 元数据一起落在输出目录");
+
+            using (var stream = File.OpenRead(Path.Combine(output, "My WP _D.pkg")))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, true))
+            {
+                var package = new PackageReader { ReadEntryBytes = false }.ReadFrom(reader);
+                Assert.That(package.Magic, Is.EqualTo("PKGV0023"));
+                Assert.That(package.Entries.Select(e => e.FullPath),
+                    Is.EquivalentTo(new[] { "materials/a.tex", "scene.json" }),
+                    "project.json 与 preview.gif 只留在包外；源图变成了 .tex");
+            }
+        }
+
+        /// <summary>4x4 全不透明 PNG，够测试用。</summary>
+        private static byte[] Png(int w, int h)
+        {
+            using var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(w, h);
+            using var ms = new MemoryStream();
+            image.SaveAsPng(ms);
+            return ms.ToArray();
         }
 
         [Test]

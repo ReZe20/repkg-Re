@@ -68,6 +68,8 @@ PKG 与 TEX 格式均由作者逆向得出。
 -e, --printentries        打印包内的条目列表
 --title-filter <TEXT>     只列出 project.json 标题包含该文本的包（不区分大小写）
 ```
+输入路径不存在/非法，或有至少一个文件解析失败时以 1 退出（失败文件会在 stderr 或输出里点名，
+例如 `Failed to read package: …` —— 损坏的包不再以裸异常中断整个运行）；其余情况以 0 退出。
 - batch - 由一个 JSON 清单驱动，在一个进程里跑多个壁纸；`mode` 选择把壁纸解包成文件（`extract`）、
   重写为移动端包（`mpkg`）、把移动端包转回 PC 包（`pkg`），还是把工程目录打成 PC 包（`pack`）
 ```
@@ -91,6 +93,11 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 --overwrite              同名目标已存在时覆盖，而不是改写 name_1.pkg
 --keep-source-images     源图与它的 .tex 一起进包（真实 WE 包里一条源图都没有）
 --no-tex-encode          不把源图封成直通 .tex，源图作为自己的条目进包
+--dxt <FORMAT>           把封出来的纹理做成块编码的 DXT1/DXT3/DXT5，而不是默认的直通 PNG/JPEG
+                         blob（接受 dxt1/dxt3/dxt5 或 1/3/5）。产物是带完整 mip 链（逐级减半到
+                         4x4）的 TEXB0002 .tex，每一级在 LZ4 真能变小时压。多帧 GIF 和小于 4x4
+                         的图编不了，回落直通形态（或原样进包），逐文件上报。--dxt 值非法时
+                         以 1 退出且不打任何包
 --no-loose-metadata      不把 project.json / 预览图拷到产出的 .pkg 旁边
 --excludepaths <PREFIXES>
                          额外排除的相对路径前缀（逗号分隔）
@@ -120,7 +127,7 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 | `options.ignoreexts` | string[] | 无 | 解包级扩展名过滤 | `--ignoreexts` |
 | `options.outputOnlyExts` | string[] | 无 | 写出级扩展名过滤 | `--output-onlyexts` |
 | `options.outputIgnoreExts` | string[] | 无 | 写出级扩展名过滤 | `--output-ignoreexts` |
-| `options.keepSubfolderStructure` | bool | false | 直接驱动 `--singledir`，所以 `true` 会把条目路径压平到单一目录 —— 键名与实际行为相反，为兼容而保留 | `-s, --singledir` |
+| `options.singleDir` | bool | false | 把条目路径压平到单一目录输出。旧键名 `options.keepSubfolderStructure` 仍可用作别名（使用时按包在 stderr 报告一次弃用警告）；两键并存时以 `singleDir` 为准 | `-s, --singledir` |
 | `options.noTexConvert` | bool | false | 不把 TEX 转换为图片 | `--no-tex-convert` |
 | `options.onlyTexImages` | bool | false | 跳过原始 `.tex` 写出 | `-p, --only-tex-images` |
 | `options.filterEffectImages` | int | 0 | 按整数百分比读取 | `--filter-effect-images` |
@@ -135,6 +142,7 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 | `options.keepReductionKey` | bool | false | 仅 `mode: pkg` - `true` 时保留 `scene.json` 中的 `"texturereduction"` 键而不是删除 | - |
 | `options.packKeepSourceImages` | bool | false | 仅 `mode: pack` - 源图与它的 `.tex` 一起进包 | `--keep-source-images` |
 | `options.packNoEncode` | bool | false | 仅 `mode: pack` - 不把源图封成直通 `.tex` | `--no-tex-encode` |
+| `options.packDxt` | string | 无 | 仅 `mode: pack` - 块编码目标：`dxt1`/`dxt3`/`dxt5`（也接受 `1`/`3`/`5`），语义与回落规则同 `--dxt`；非法值使整份清单无效（退出码 1） | `--dxt` |
 | `options.packNoLooseMetadata` | bool | false | 仅 `mode: pack` - 不把 `project.json` / 预览图拷到产出的 `.pkg` 旁边 | `--no-loose-metadata` |
 | `options.packExcludePaths` | string[] | none | 仅 `mode: pack` - 额外排除的相对路径前缀 | `--excludepaths` |
 
@@ -240,10 +248,12 @@ Wallpaper Engine *手机端导出*的包（区别于本工具产出的包）通�
 
 关于产物的两点须知：
 
-- **我们自己封的纹理比编辑器的大。** 直通 PNG blob 花的就是那张 PNG 的字节，而编辑器的 DXT5 是
-  1 字节/像素（4K：8MB 对 33MB）。每一张都计在 `封纹理 N` 这一列里。要发 DXT1/DXT5 需要新写一个块
-  压缩器（见 `PassthroughTexBuilder` 的类注释）；宁可看见原始图条目也不要一个自己没要过的纹理，
-  就用 `--no-tex-encode`。
+- **默认封出来的是直通 blob，比编辑器的大。** 直通 PNG 花的就是那张 PNG 的字节，而编辑器的 DXT5 是
+  1 字节/像素（4K：8MB 对 33MB）。这个形态不是臆造的（普查里 1348 条就是它），但在意体量时用
+  `--dxt dxt5` 就把每张封出来的纹理换成真正的块编码：TEXB0002 + 完整 mip 链，每级在 LZ4 真能变小时
+  压。它默认不开，因为直通才是 WE 导入 PNG 时自己发的形态，也因为块编码的有损是 PNG blob 没有的那种。
+  编不了的图（多帧 GIF、小于 4x4）回落直通形态或原样进包，逐文件上报。每一张封出来的纹理都计在
+  `封纹理 N` 这一列里；宁可看见原始图条目也不要一个自己没要过的纹理，就用 `--no-tex-encode` 整个关掉。
 - **图片改过、但编辑器还没重编 `.tex` 时，进包的是那份旧 `.tex`。** 打包比的是文件名不是像素内容，
   所以它察觉不到 `foo.png` 比 `foo.tex` 新。WE 自己渲染时读的也是 `.tex`，这一条与编辑器一致。
 

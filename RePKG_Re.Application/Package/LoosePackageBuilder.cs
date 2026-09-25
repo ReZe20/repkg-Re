@@ -29,6 +29,13 @@ namespace RePKG_Re.Application.Package
 
         /// <summary>直通 .tex 的头部标志位。WE 的图大多带 ClampUVs(实测 1172/1348)，默认跟它。</summary>
         public TexFlags ImageTexFlags { get; set; } = TexFlags.ClampUVs;
+
+        /// <summary>
+        /// 非 null = 源图优先走块编码(DXT1/DXT3/DXT5 + mip 链 + LZ4)，编不动(多帧 GIF、坏图)再回落直通。
+        /// null = 维持默认形态:能直通的 PNG/JPEG 封直通 blob,其余原样进包并上报 —— 与真实包里
+        /// 1348 条 PNG 直通的观测一致，块编码是显式 opt-in(pack --dxt)。
+        /// </summary>
+        public TexFormat? EncodeDxtFormat { get; set; }
     }
 
     public class LoosePackageReport
@@ -234,24 +241,25 @@ namespace RePKG_Re.Application.Package
                     }
                     else if (options.EncodeImages)
                     {
-                        if (PassthroughTexBuilder.CanBuild(diskPath))
+                        var encoded = TryEncode(diskPath, name, SidecarFlags(byName, name, options), options, report);
+                        if (encoded != null)
                         {
-                            var encoded = TryEncode(diskPath, tex, SidecarFlags(byName, name, options), report);
-                            if (encoded != null)
+                            if (!used.Add(tex))
                             {
-                                if (!used.Add(tex))
-                                {
-                                    report.Warnings.Add($"条目名重复，跳过 {tex}");
-                                    continue;
-                                }
-                                report.InputBytes += encoded.Length; // 计的是封出来的字节，源图那一份不再计
-                                plan.Add(new PlanItem { Name = tex, Generated = encoded });
+                                report.Warnings.Add($"条目名重复，跳过 {tex}");
                                 continue;
                             }
+                            report.InputBytes += encoded.Length; // 计的是封出来的字节，源图那一份不再计
+                            plan.Add(new PlanItem { Name = tex, Generated = encoded });
+                            continue;
                         }
-                        else
+
+                        // TryEncode 返回 null 的两条路:
+                        //   - 直通形态都当不了(PNG/JPEG 之外)且 DXT 也没成 —— DXT 试过则 TryEncode 已报过失败原因,
+                        //     没试过(DXT 关着)才由这里报"找不到先例",同一个文件不报两遍。
+                        //   - 直通能封但封失败 —— TryEncode 已报"封 .tex 失败",这里不重复。
+                        if (options.EncodeDxtFormat == null && !PassthroughTexBuilder.CanBuild(diskPath))
                         {
-                            // 认得的直通形态只有 PNG/JPEG(见 PassthroughTexBuilder)，其它源图只能原样进包
                             report.Warnings.Add($"这种源图格式在真实 WE 包里找不到先例，不封 .tex、原样进包 {name}");
                         }
                     }
@@ -384,11 +392,36 @@ namespace RePKG_Re.Application.Package
             return flags;
         }
 
-        private byte[] TryEncode(string diskPath, string entryName, TexFlags flags, LoosePackageReport report)
+        private byte[] TryEncode(
+            string diskPath, string entryName, TexFlags flags, LoosePackageOptions options, LoosePackageReport report)
         {
+            var bytes = File.ReadAllBytes(diskPath);
+
+            // 显式 --dxt 时块编码优先，失败(GIF 多帧、坏图、小于 4x4)回落直通 —— 回落不是错误，
+            // 但必须报一句，否则"整包都是 DXT"的预期与实际产物不符还查不出来。
+            if (options.EncodeDxtFormat is { } fmt)
+            {
+                try
+                {
+                    return DxtTexBuilder.Build(diskPath, bytes, fmt, flags);
+                }
+                catch (Exception e)
+                {
+                    if (!PassthroughTexBuilder.CanBuild(diskPath))
+                    {
+                        report.Warnings.Add(
+                            $"{fmt} 编码失败({e.GetType().Name}: {Shorten(e.Message)})，源图原样进包 {entryName}");
+                        return null;
+                    }
+                    report.Notes.Add($"{entryName} 不走 {fmt}({Shorten(e.Message)})，回落直通");
+                }
+            }
+
+            if (!PassthroughTexBuilder.CanBuild(diskPath)) return null;
+
             try
             {
-                return PassthroughTexBuilder.Build(diskPath, File.ReadAllBytes(diskPath), flags);
+                return PassthroughTexBuilder.Build(diskPath, bytes, flags);
             }
             catch (Exception e)
             {

@@ -87,9 +87,11 @@ namespace RePKG_Re.Application.Texture.Helpers
             G = source.G;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void FromAbgr32(Abgr32 source)
         {
-            throw new System.NotImplementedException();
+            R = source.R;
+            G = source.G;
         }
 
         public void FromL8(L8 source)
@@ -98,20 +100,19 @@ namespace RePKG_Re.Application.Texture.Helpers
             G = source.PackedValue;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void FromL16(L16 source)
         {
-            throw new System.NotImplementedException();
+            var v = DownScaleFrom16BitTo8Bit(source.PackedValue);
+            R = v;
+            G = v;
         }
 
-        public void FromLa16(La16 source)
-        {
-            throw new System.NotImplementedException();
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void FromLa16(La16 source) => FromScaledVector4(source.ToScaledVector4());
 
-        public void FromLa32(La32 source)
-        {
-            throw new System.NotImplementedException();
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void FromLa32(La32 source) => FromScaledVector4(source.ToScaledVector4());
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void FromRgb24(Rgb24 source)

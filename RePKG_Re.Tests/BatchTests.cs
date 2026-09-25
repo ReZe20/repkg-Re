@@ -206,7 +206,7 @@ namespace RePKG_Re.Tests
             var opts = manifest.ToExtractOptions();
             Assert.That(opts.OnlyPaths, Is.EqualTo("materials,sounds"));
             Assert.That(opts.PathsDepth, Is.EqualTo(1));
-            Assert.That(opts.SingleDir, Is.True); // keepSubfolderStructure → -s
+            Assert.That(opts.SingleDir, Is.True); // 旧键 keepSubfolderStructure 仍可读(兼容) → -s
             Assert.That(opts.FilterEffectImages, Is.EqualTo(85.0));
             Assert.That(opts.OutputOnlyExts, Is.EqualTo("png,mp4"));
             Assert.That(opts.Overwrite, Is.True);
@@ -234,7 +234,7 @@ namespace RePKG_Re.Tests
     ""ignoreexts"": [ ""mp4"" ],
     ""outputOnlyExts"": [ ""png"", ""json"" ],
     ""outputIgnoreExts"": [ ""dat"" ],
-    ""keepSubfolderStructure"": true,
+    ""singleDir"": true,
     ""noTexConvert"": true,
     ""onlyTexImages"": true,
     ""filterEffectImages"": 85,
@@ -264,7 +264,7 @@ namespace RePKG_Re.Tests
             Assert.That(o.IgnoreExts, Is.EqualTo("mp4"));
             Assert.That(o.OutputOnlyExts, Is.EqualTo("png,json"));
             Assert.That(o.OutputIgnoreExts, Is.EqualTo("dat"));
-            // 表里标明"名字与行为相反"的那一格:true 把条目路径压平,等价 -s/--singledir
+            // 平铺开关:true 把条目路径压平,等价 -s/--singledir(旧键 keepSubfolderStructure 名字相反,已弃用)
             Assert.That(o.SingleDir, Is.True);
             Assert.That(o.NoTexConvert, Is.True);
             Assert.That(o.OnlyTexImages, Is.True);
@@ -325,7 +325,7 @@ namespace RePKG_Re.Tests
             File.WriteAllText(path, @"{
   ""Threads"": 2,
   ""Wallpapers"": [ { ""Id"": ""A"", ""Input"": ""C:/in"", ""Output"": ""C:/out"", ""OutputName"": ""N"" } ],
-  ""Options"": { ""PathsDepth"": 1, ""OnlyPaths"": [ ""materials"" ], ""KeepSubfolderStructure"": true }
+  ""Options"": { ""PathsDepth"": 1, ""OnlyPaths"": [ ""materials"" ], ""SingleDir"": true }
 }");
 
             var manifest = BatchManifest.Load(path);
@@ -337,6 +337,27 @@ namespace RePKG_Re.Tests
             Assert.That(o.PathsDepth, Is.EqualTo(1));
             Assert.That(o.OnlyPaths, Is.EqualTo("materials"));
             Assert.That(o.SingleDir, Is.True);
+        }
+
+        /// <summary>
+        /// 平铺开关的两条兼容语义:旧键单独给仍然生效;两键同时给时正名键 singleDir 获胜。
+        /// </summary>
+        [Test]
+        public void SingleDir_LegacyKey_StillWorks_ModernKeyWins()
+        {
+            var legacyOnly = Path.Combine(_tempDir, "legacy.json");
+            File.WriteAllText(legacyOnly, @"{
+  ""wallpapers"": [ { ""id"": ""A"", ""input"": ""C:/in"", ""output"": ""C:/out"" } ],
+  ""options"": { ""keepSubfolderStructure"": true }
+}");
+            Assert.That(BatchManifest.Load(legacyOnly).ToExtractOptions().SingleDir, Is.True);
+
+            var both = Path.Combine(_tempDir, "both.json");
+            File.WriteAllText(both, @"{
+  ""wallpapers"": [ { ""id"": ""A"", ""input"": ""C:/in"", ""output"": ""C:/out"" } ],
+  ""options"": { ""keepSubfolderStructure"": true, ""singleDir"": false }
+}");
+            Assert.That(BatchManifest.Load(both).ToExtractOptions().SingleDir, Is.False);
         }
 
         [Test]

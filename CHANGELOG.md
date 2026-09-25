@@ -1,5 +1,88 @@
 # Changelog / 更新日志
 
+## v0.5.5
+
+### English
+
+- **`pack --dxt` — real block compression**: textures wrapped by `pack` can now be encoded as
+  DXT1/DXT3/DXT5 instead of the default passthrough PNG/JPEG blob. New `DxtEncoder` (BC1/BC2/BC3
+  single-pass cluster-fit, written as the exact mirror of our own decoder `DXT.cs` — LSB-first
+  indices, 565 expansion, truncating midpoint, the DXT1 three-/four-color form rule, BC3 always
+  writes the 7-entry table with `a0 > a1`) and `DxtTexBuilder` (source image → `TEXB0002` V2 mip
+  chain, box-resampled by halves down to 4x4, each mip LZ4'd only when that actually shrinks it).
+  Opt-in via `pack --dxt dxt1|dxt3|dxt5` (also accepts `1`/`3`/`5`; an invalid value exits 1
+  without packing) or manifest `options.packDxt`. The default stays the passthrough shape — that
+  is what WE itself ships for imported PNGs (1348 surveyed textures) and block compression is
+  lossy in a way a PNG blob is not. Images the encoder refuses (multi-frame GIFs, anything under
+  4x4) fall back to the passthrough shape or the raw entry, reported per file; the fallback never
+  duplicates the existing "no precedent" warning. 42 new tests, including encoder↔decoder
+  round-trips with exact-equality assertions on 565 fixed-point colors and an end-to-end pass
+  through `TexReader.Default`.
+- **`info` was a stub — now it works**: `info -t <dir>` actually dumps TEX structure (the README
+  had promised this since long before the code did), `info` returns proper exit codes and echoes
+  the path it failed on, and a corrupt file produces a line-level error instead of a raw
+  exception. Side fix: `--sortby extension` never matched anything. The mipmap line now also
+  reports `lz4` and the uncompressed byte count when a mip is LZ4'd (structure-only reads leave
+  `Bytes` null, so the count comes from the mip record).
+- **Manifest key rename: `options.singleDir`**: the flat-output switch was driven by
+  `keepSubfolderStructure`, whose name says the opposite of what the flag does. The correctly
+  named `singleDir` (same name and meaning as `-s/--singledir`) is now the documented key; the
+  legacy key is still read but prints a one-time deprecation warning on stderr (stdout stays
+  JSON-only), and when both keys are present `singleDir` wins.
+- **RG88 decoding completed**: the RG88 format handler finished the missing channel unpacking, so
+  R8/RG88 mask textures — 2344 of them in the 279-package census — decode correctly.
+- **V4 / MP4 mip payload writer**: `TexImageWriter` can now write the `TEXB0003` V4 mip shape
+  (video textures: the mp4-in-a-TEX layout) that previously threw `NotSupportedException`. The
+  constant-payload layout (`1` / `2` / `""` / `1`) was cross-verified against the byte-exact
+  reproduction of an official sample that the repkg-ng writer passed — neither implementation had
+  a real-package corpus in CI, so both being pinned to the same independently captured sample is
+  the strongest check available offline.
+- **Synthetic TEX round-trip corpus**: 7 tests that build TEX containers in memory and read them
+  back — V1/V2 RGBA·R8·RG88·DXT5+LZ4, V3 GIF, V3 PNG passthrough, V4 MP4 plus the TEXB0004
+  non-MP4 downgrade path — with zero external corpus files, so the reader/writer matrix is
+  covered even where the 32 real-`.tex` tests are skipped.
+- **Release pipeline publishes a Linux binary**: `release.yml` gains a `build-linux` job that
+  produces the linux-x64 NativeAOT `tar.gz` next to the win-x64 zip (the `AotLinuxX64` profile
+  shipped in v0.5.4 but was never actually published).
+- **Docs**: both READMEs synced — `--dxt` / `options.packDxt` and the `singleDir` rename are
+  documented, the pack trade-off note now describes the block-compression option instead of
+  saying it would need writing, and `info`'s exit-code behavior is spelled out.
+- **Tests**: full suite 211 pass / 0 fail / 32 skip (243 total; baseline was 161 pass) — 49 cases
+  added across `DxtEncoderRoundtripTests`, `DxtTexBuilderTests` and `SyntheticTexRoundtripTests`.
+
+### 中文
+
+- **`pack --dxt` —— 真正的块编码**：`pack` 封出来的纹理现在可以编为 DXT1/DXT3/DXT5，不再是默认的
+  直通 PNG/JPEG blob。新增 `DxtEncoder`（BC1/BC2/BC3 单遍 cluster-fit，与自家解码器 `DXT.cs` 逐规则
+  互镜像：LSB-first 索引、565 展开、截断中点、DXT1 三/四色形态规则、BC3 恒写 `a0 > a1` 的 7-entry
+  表）与 `DxtTexBuilder`（源图 → `TEXB0002` V2 mip 链，逐级减半 Box 采样到 4x4，每级只在 LZ4 真能
+  变小时才压）。开关是显式的：`pack --dxt dxt1|dxt3|dxt5`（也接受 `1`/`3`/`5`，非法值退出码 1 且不
+  打包）或清单 `options.packDxt`。默认仍是直通形态——那是 WE 导入 PNG 时自己发的形态（普查 1348
+  条），而且块编码的有损是 PNG blob 没有的。编码器拒收的图（多帧 GIF、小于 4x4）回落直通形态或原样
+  进包、逐文件上报，且不与既有的"找不到先例"警告重复播报。新增 42 条用例，含编码器↔解码器往返
+  （在 565 定点色上用逐像素相等断言）与穿过 `TexReader.Default` 的端到端回环。
+- **`info` 此前是空壳，现在能用了**：`info -t <dir>` 真的会 dump TEX 结构（README 早已这么承诺，代码
+  一直没有）；`info` 返回正确退出码、失败时回显出错路径，损坏文件给行级报错而不是裸抛异常。顺手修掉
+  `--sortby extension` 永远匹配不到的 bug。mip 行现在还报 `lz4` 与解压后字节数（只读结构时 `Bytes`
+  为 null，数值取自 mip 记录里的 decompressedBytesCount）。
+- **清单键正名 `options.singleDir`**：平铺输出开关此前由 `keepSubfolderStructure` 驱动，键名与行为
+  正好相反。正名键 `singleDir`（与 `-s/--singledir` 同名同义）现在是文档口径；旧键仍可读取，但会在
+  stderr 打一次弃用警告（stdout 只允许 JSON 事件），两键并存时 `singleDir` 获胜。
+- **RG88 解码补全**：补齐缺失的通道解包，R8/RG88 遮罩纹理（279 包普查里有 2344 条）现在能正确解码。
+- **V4 / MP4 mip 写侧**：`TexImageWriter` 现在能写 `TEXB0003` V4 mip 形态（视频纹理：mp4 嵌在 TEX
+  里的那种），不再抛 `NotSupportedException`。常量载荷布局（`1` / `2` / `""` / `1`）与 repkg-ng 的
+  写侧做了跨实现互验——它的 `WriteMipmapV4` 是对官方样本字节级复刻通过的同一布局。双方都没有可进 CI
+  的真实包语料，各自钉在同一个独立采集的样本上已是离线条件下最强的校验。
+- **合成 TEX 回环语料**：7 条在内存里构造 TEX 容器再读回的用例——V1/V2 RGBA·R8·RG88·DXT5+LZ4、
+  V3 GIF、V3 PNG 直通、V4 MP4，外加 TEXB0004 非 MP4 降级路径——零外部语料文件，32 条缺语料的真
+  `.tex` 用例被跳过时，读/写矩阵仍有覆盖。
+- **发布流水线带上 Linux 产物**：`release.yml` 新增 `build-linux` job，在 win-x64 zip 之外发布
+  linux-x64 NativeAOT `tar.gz`（`AotLinuxX64` 配置 v0.5.4 就有了，但从没真正发过）。
+- **文档**：两份 README 同步——补 `--dxt` / `options.packDxt` 与 `singleDir` 正名条目；pack 那条
+  取舍说明从"块编码还没人写"改写为块编码选项的实际语义；补 `info` 的退出码行为。
+- **测试**：全量 211 pass / 0 fail / 32 skip（共 243；基线 161 pass）——`DxtEncoderRoundtripTests`、
+  `DxtTexBuilderTests`、`SyntheticTexRoundtripTests` 共新增 49 条用例。
+
 ## v0.5.4
 
 ### English

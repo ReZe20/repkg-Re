@@ -74,6 +74,9 @@ but not yet verified on real hardware.
 --title-filter <TEXT>     Only list packages whose project.json title contains this text
                           (case-insensitive)
 ```
+Exits 1 when the input path is missing/invalid or at least one file failed to parse (the failing
+files are named on stderr / reported inline, e.g. `Failed to read package: …` — a corrupt package
+no longer aborts the run with a raw exception); otherwise 0.
 - batch - runs many wallpapers in one process, driven by a JSON manifest; `mode` selects unpacking
   them to files (`extract`), rewriting them as mobile packages (`mpkg`), converting mobile
   packages back to PC ones (`pkg`), or packing a project directory into a PC package (`pack`)
@@ -102,6 +105,13 @@ which is how you tell whether the memory gate is seeing the container's limit or
                          carry none)
 --no-tex-encode          Do not wrap source images into a passthrough .tex; ship them as their
                          own entries
+--dxt <FORMAT>           Block-compress wrapped textures into DXT1, DXT3 or DXT5 instead of the
+                         default passthrough PNG/JPEG blob (accepted: dxt1/dxt3/dxt5 or 1/3/5).
+                         The result is a TEXB0002 .tex with a full mip chain (halved to 4x4),
+                         every mip LZ4-compressed when that actually shrinks it. Multi-frame GIFs
+                         and images smaller than 4x4 cannot be block-encoded and fall back to the
+                         passthrough shape (or the raw entry), reported per file. An invalid
+                         --dxt value exits 1 without packing anything
 --no-loose-metadata      Do not copy project.json / the preview image next to the produced .pkg
 --excludepaths <PREFIXES>
                          Also skip these relative path prefixes (comma-delimited)
@@ -132,7 +142,7 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.ignoreexts` | string[] | none | extract-level extension filter | `--ignoreexts` |
 | `options.outputOnlyExts` | string[] | none | write-level extension filter | `--output-onlyexts` |
 | `options.outputIgnoreExts` | string[] | none | write-level extension filter | `--output-ignoreexts` |
-| `options.keepSubfolderStructure` | bool | false | drives `--singledir` directly, so `true` flattens the entry paths into one directory - the key name says the opposite of what it does and is kept for compatibility | `-s, --singledir` |
+| `options.singleDir` | bool | false | `true` flattens the entry paths into one output directory (same meaning as `-s/--singledir`). The legacy key `keepSubfolderStructure` is still read — its name says the opposite of what it does — but it now prints a deprecation warning on stderr; when both keys are present `singleDir` wins | `-s, --singledir` |
 | `options.noTexConvert` | bool | false | don't convert TEX to images | `--no-tex-convert` |
 | `options.onlyTexImages` | bool | false | skip raw `.tex` writes | `-p, --only-tex-images` |
 | `options.filterEffectImages` | int | 0 | read as an integer percent | `--filter-effect-images` |
@@ -147,6 +157,7 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.keepReductionKey` | bool | false | `mode: pkg` only - `true` keeps the `"texturereduction"` key in `scene.json` instead of removing it | - |
 | `options.packKeepSourceImages` | bool | false | `mode: pack` only - also pack source images next to their `.tex` | `--keep-source-images` |
 | `options.packNoEncode` | bool | false | `mode: pack` only - don't wrap source images into a passthrough `.tex` | `--no-tex-encode` |
+| `options.packDxt` | string | none | `mode: pack` only - block-compress wrapped textures: `dxt1`/`dxt3`/`dxt5` (or `1`/`3`/`5`), same semantics and fallback rules as `--dxt`; an invalid value makes the manifest invalid (exit 1) | `--dxt` |
 | `options.packNoLooseMetadata` | bool | false | `mode: pack` only - don't copy `project.json` / the preview next to the produced `.pkg` | `--no-loose-metadata` |
 | `options.packExcludePaths` | string[] | none | `mode: pack` only - extra relative path prefixes to skip | `--excludepaths` |
 
@@ -197,11 +208,16 @@ mp3 / ttf / otf / wav / ogg / flac / ttc / gif`. There is **no** `png`, `jpg`, `
 
 Two things to know about the produced package:
 
-- **Textures we compile ourselves are bigger than the editor's.** A passthrough PNG blob costs what
-  the PNG costs, while the editor's DXT5 is 1 byte/pixel (4K: 8 MB against 33 MB uploaded). Every
-  such texture is counted in the `封纹理 N` report line. Encoding to DXT1/DXT5 would need a new
-  block compressor — see the class comment on `PassthroughTexBuilder`, and the `--no-tex-encode` switch if
-  you would rather see the raw image entry than a texture you did not ask for.
+- **The default `.tex` we compile is a passthrough blob, which is bigger than the editor's.** A
+  passthrough PNG costs what the PNG costs, while the editor's DXT5 is 1 byte/pixel (4K: 8 MB
+  against 33 MB uploaded). That shape is not invented — 1348 of the surveyed textures are exactly
+  it — but if size matters, `--dxt dxt5` switches every wrapped texture to real block compression:
+  a `TEXB0002` with a full mip chain, each mip LZ4'd when that pays. It is opt-in because the
+  passthrough shape is what WE itself ships for imported PNGs, and because block compression is
+  lossy in a way a PNG blob is not. Images it cannot encode (multi-frame GIFs, anything under 4x4)
+  fall back to the passthrough shape or the raw entry, and the fallback is reported per file.
+  Every wrapped texture is counted in the `封纹理 N` report line; `--no-tex-encode` turns wrapping
+  off entirely if you would rather see the raw image entry than a texture you did not ask for.
 - **A same-named `.tex` that the editor has not refreshed after an image edit is shipped as-is.**
   The packer compares file names, not image content, so it cannot notice that `foo.png` changed
   after `foo.tex` was compiled. WE itself renders from the `.tex`, so this matches the editor.

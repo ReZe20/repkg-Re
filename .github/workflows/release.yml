@@ -19,7 +19,54 @@ permissions:
   contents: write
 
 jobs:
+  # Linux 产物必须在 Linux 上链接(NativeAOT 不能交叉编译),原先 release 只有 windows job,
+  # 结果 README 宣称的 linux-x64 单文件从未出现在 Release 里 —— ci.yml 明明已经在构建它,
+  # 只是从不发布。本 job 与 ci.yml 的 AotLinuxX64 步骤同源(publish + 体积阈值 + --help 冒烟),
+  # 产出交给下面的 windows job 一起挂进 Release。
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 发布 linux-x64 NativeAOT（自包含单文件，免 .NET 运行时）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang zlib1g-dev
+          dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotLinuxX64 --nologo -v:m
+
+      # AOT 假成功防护与阈值来历同 ci.yml(见那里注释)。
+      - name: 冒烟验证 AOT 产物可独立运行
+        run: |
+          exe=RePKG_Re/bin/publish-aot-linux/RePKG_Re
+          test -f "$exe" || { echo "未找到 AOT 产物: $exe"; exit 1; }
+          chmod +x "$exe"
+          len=$(stat -c%s "$exe")
+          [ "$len" -ge 5242880 ] || { echo "AOT 产物体积异常($len 字节 < 5MB),疑似退回框架依赖"; exit 1; }
+          if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
+          echo "冒烟通过: $exe ($len 字节)"
+
+      - name: 打包 tar.gz
+        run: |
+          ver="${INPUTS_VERSION:-$GITHUB_REF_NAME}"
+          case "$ver" in v*) ;; *) ver=dev ;; esac
+          tar -C RePKG_Re/bin/publish-aot-linux -czf "RePKG_Re-$ver-linux-x64.tar.gz" .
+          echo "artifact_name=RePKG_Re-$ver-linux-x64.tar.gz" >> "$GITHUB_ENV"
+
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
+      - name: 交给 release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: ${{ env.artifact_name }}
+
   build:
+    needs: build-linux
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +94,11 @@ jobs:
           & $exe --help *> $null
           if ($LASTEXITCODE -ne 0) { throw "AOT exe --help 冒烟失败 exit $LASTEXITCODE" }
           Write-Host "冒烟通过: $exe ($len 字节),--help exit 0"
+
+      - name: 下载 linux 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x64
 
       - name: 打包 zip 并生成版本介绍
         shell: pwsh
@@ -82,12 +134,16 @@ jobs:
         with:
           tag_name: ${{ env.version }}
           body_path: release-body.md
-          files: RePKG_Re-${{ env.version }}-win-x64.zip
+          files: |
+            RePKG_Re-${{ env.version }}-win-x64.zip
+            RePKG_Re-${{ env.version }}-linux-x64.tar.gz
 
       - name: 创建 Release（自动生成介绍）
         if: env.HAS_BODY != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.version }}
-          files: RePKG_Re-${{ env.version }}-win-x64.zip
+          files: |
+            RePKG_Re-${{ env.version }}-win-x64.zip
+            RePKG_Re-${{ env.version }}-linux-x64.tar.gz
           generate_release_notes: true

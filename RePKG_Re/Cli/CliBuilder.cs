@@ -1,6 +1,7 @@
 using System;
 using System.CommandLine;
 using RePKG_Re.Command;
+using RePKG_Re.Core.Texture;
 
 namespace RePKG_Re.Cli
 {
@@ -52,6 +53,10 @@ namespace RePKG_Re.Cli
                 "Also pack the source images alongside their .tex (real WE packages carry none)");
             var noEncode = Flag("--no-tex-encode", null,
                 "Do not wrap source images into passthrough .tex; ship them as their own entries");
+            var dxt = Opt<string>("--dxt", null,
+                "Block-compress source images into DXT (.tex with a full mip chain + LZ4) instead of the " +
+                "default passthrough PNG/JPEG blob. Accepted: dxt1, dxt3, dxt5. Multi-frame GIFs and " +
+                "unreadable images still fall back to passthrough when possible", "FORMAT");
             var noLoose = Flag("--no-loose-metadata", null, "Do not copy project.json / preview next to the produced .pkg");
             var exclude = Opt<string>("--excludepaths", null,
                 "Also skip these relative path prefixes (comma-delimited)", "PREFIXES");
@@ -62,11 +67,24 @@ namespace RePKG_Re.Cli
             cmd.Add(overwrite);
             cmd.Add(keepImages);
             cmd.Add(noEncode);
+            cmd.Add(dxt);
             cmd.Add(noLoose);
             cmd.Add(exclude);
 
             cmd.SetAction(pr =>
             {
+                TexFormat? encodeDxt;
+                try
+                {
+                    encodeDxt = PackOptions.ParseDxt(pr.GetValue(dxt));
+                }
+                catch (ArgumentException e)
+                {
+                    // 非法 --dxt 是参数错误,不是运行错误:不进执行器,一行消息 + exit 1
+                    Console.Error.WriteLine(e.Message);
+                    return 1;
+                }
+
                 Pack.Action(new PackOptions
                 {
                     Input = pr.GetValue(input) ?? string.Empty,
@@ -76,6 +94,7 @@ namespace RePKG_Re.Cli
                     Overwrite = pr.GetValue(overwrite),
                     KeepSourceImages = pr.GetValue(keepImages),
                     NoEncodeImages = pr.GetValue(noEncode),
+                    EncodeDxt = encodeDxt,
                     NoLooseMetadata = pr.GetValue(noLoose),
                     ExcludePaths = pr.GetValue(exclude)
                 });
@@ -204,7 +223,6 @@ namespace RePKG_Re.Cli
             cmd.Add(titleFilter);
 
             cmd.SetAction(pr =>
-            {
                 Info.Action(new InfoOptions
                 {
                     Input = pr.GetValue(input) ?? string.Empty,
@@ -214,9 +232,7 @@ namespace RePKG_Re.Cli
                     ProjectInfo = pr.GetValue(projectInfo),
                     PrintEntries = pr.GetValue(printEntries),
                     TitleFilter = pr.GetValue(titleFilter)
-                });
-                return 0;
-            });
+                }));
 
             return cmd;
         }

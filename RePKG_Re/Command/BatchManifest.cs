@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.Json;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Json;
+using RePKG_Re.Core.Texture;
 
 namespace RePKG_Re.Command
 {
@@ -100,7 +101,7 @@ namespace RePKG_Re.Command
                     IgnoreExts = LegacyJson.ToStringArray(GetProp(o, "ignoreexts")),
                     OutputOnlyExts = LegacyJson.ToStringArray(GetProp(o, "outputOnlyExts")),
                     OutputIgnoreExts = LegacyJson.ToStringArray(GetProp(o, "outputIgnoreExts")),
-                    KeepSubfolderStructure = LegacyJson.AsBool(GetProp(o, "keepSubfolderStructure")) ?? false,
+                    SingleDir = ReadSingleDir(o),
                     NoTexConvert = LegacyJson.AsBool(GetProp(o, "noTexConvert")) ?? false,
                     OnlyTexImages = LegacyJson.AsBool(GetProp(o, "onlyTexImages")) ?? false,
                     FilterEffectImages = LegacyJson.AsInt(GetProp(o, "filterEffectImages")) ?? 0,
@@ -116,6 +117,8 @@ namespace RePKG_Re.Command
                     PackKeepSourceImages = LegacyJson.AsBool(GetProp(o, "packKeepSourceImages")) ?? false,
                     PackNoEncode = LegacyJson.AsBool(GetProp(o, "packNoEncode")) ?? false,
                     PackNoLooseMetadata = LegacyJson.AsBool(GetProp(o, "packNoLooseMetadata")) ?? false,
+                    // 非法值在 Load 期就炸(与 mpkgReduction 同一口径):这是清单写错了,不是运行期偶发错误
+                    PackDxt = PackOptions.ParseDxt(LegacyJson.AsString(GetProp(o, "packDxt"))),
                     PackExcludePaths = LegacyJson.ToStringArray(GetProp(o, "packExcludePaths"))
                 };
             }
@@ -124,6 +127,28 @@ namespace RePKG_Re.Command
         }
 
         private static JsonElement? GetProp(JsonElement? root, string name) => LegacyJson.GetProp(root, name);
+
+        /// <summary>
+        /// 读平铺开关:正名键 "singleDir"(与 -s/--singledir 同名同义)优先;
+        /// 历史键 "keepSubfolderStructure" 名字与行为相反(true = 压平),保留兼容但走 stderr 弃用警告
+        /// (batch 的 stdout 只允许 JSON 事件,警告必须进 stderr)。两键都给时 singleDir 获胜。
+        /// </summary>
+        private static bool ReadSingleDir(JsonElement options)
+        {
+            var modern = LegacyJson.AsBool(GetProp(options, "singleDir"));
+            var legacy = LegacyJson.AsBool(GetProp(options, "keepSubfolderStructure"));
+
+            if (modern is not null && legacy is not null)
+                Console.Error.WriteLine("Warning: manifest options has both singleDir and keepSubfolderStructure;" +
+                                        " singleDir wins (" + modern + "). keepSubfolderStructure is deprecated" +
+                                        " and its name is the opposite of what it does.");
+            else if (legacy is not null)
+                Console.Error.WriteLine("Warning: manifest option keepSubfolderStructure is deprecated and does the" +
+                                        " opposite of its name (true = flatten into one directory);" +
+                                        " use singleDir instead.");
+
+            return modern ?? legacy ?? false;
+        }
 
         private void Validate()
         {
@@ -170,7 +195,7 @@ namespace RePKG_Re.Command
                 OnlyPaths = Join(o.OnlyPaths),
                 IgnorePaths = Join(o.IgnorePaths),
                 PathsDepth = o.PathsDepth,
-                SingleDir = o.KeepSubfolderStructure,
+                SingleDir = o.SingleDir,
                 NoTexConvert = o.NoTexConvert,
                 OnlyTexImages = o.OnlyTexImages,
                 Overwrite = o.Overwrite,
@@ -229,6 +254,7 @@ namespace RePKG_Re.Command
                 KeepSourceImages = o.PackKeepSourceImages,
                 NoEncodeImages = o.PackNoEncode,
                 NoLooseMetadata = o.PackNoLooseMetadata,
+                EncodeDxt = o.PackDxt,
                 ExcludePaths = o.PackExcludePaths == null || o.PackExcludePaths.Length == 0
                     ? null
                     : string.Join(",", o.PackExcludePaths)
@@ -287,8 +313,12 @@ namespace RePKG_Re.Command
         /// <summary>-I/--output-ignoreexts(输出层过滤)</summary>
         public string[] OutputIgnoreExts { get; set; }
 
-        /// <summary>-s/--singledir:true = 全部文件平铺进输出目录(WE Tool KeepSubfolderStructure==1)</summary>
-        public bool KeepSubfolderStructure { get; set; }
+        /// <summary>
+        /// -s/--singledir:true = 全部文件平铺进输出目录。
+        /// manifest 键 "singleDir";历史键 "keepSubfolderStructure"(WE Tool 传来,名字与行为相反)
+        /// 仍可读但已弃用,见 ReadSingleDir。
+        /// </summary>
+        public bool SingleDir { get; set; }
 
         /// <summary>--no-tex-convert</summary>
         public bool NoTexConvert { get; set; }
@@ -340,6 +370,9 @@ namespace RePKG_Re.Command
 
         /// <summary>true = 不把 project.json/预览图作为同级 loose 文件写到输出目录。</summary>
         public bool PackNoLooseMetadata { get; set; }
+
+        /// <summary>dxt1/dxt3/dxt5 = 源图块编码(见 pack --dxt)；null = 默认直通形态。load 期已解析成枚举。</summary>
+        public TexFormat? PackDxt { get; set; }
 
         /// <summary>额外排除的相对路径前缀(如 "samplemedia,docs")。</summary>
         public string[] PackExcludePaths { get; set; }

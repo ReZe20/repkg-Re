@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Core.Json;
+using RePKG_Re.Core.Texture;
 
 namespace RePKG_Re.Command
 {
@@ -37,6 +38,13 @@ namespace RePKG_Re.Command
         /// <summary>额外排除的相对路径前缀(逗号分隔)</summary>
         public string ExcludePaths { get; set; }
 
+        /// <summary>
+        /// 源图块编码目标(DXT1/DXT3/DXT5)，留空 = 默认直通形态。
+        /// 与 NoEncodeImages 同时给出时 --no-tex-encode 赢(直通和块编码同属"编码"，关了就都不做)。
+        /// 字符串入口见 <see cref="ParseDxt"/>。
+        /// </summary>
+        public TexFormat? EncodeDxt { get; set; }
+
         public LoosePackageOptions ToBuilderOptions()
         {
             return new LoosePackageOptions
@@ -44,8 +52,23 @@ namespace RePKG_Re.Command
                 Magic = string.IsNullOrWhiteSpace(Magic) ? "PKGV0018" : Magic.Trim(),
                 EncodeImages = !NoEncodeImages,
                 KeepSourceImages = KeepSourceImages,
-                ExcludePaths = string.IsNullOrWhiteSpace(ExcludePaths) ? null : ExcludePaths.Split(',')
+                ExcludePaths = string.IsNullOrWhiteSpace(ExcludePaths) ? null : ExcludePaths.Split(','),
+                EncodeDxtFormat = EncodeDxt
             };
+        }
+
+        /// <summary>命令行 --dxt 与 manifest "packDxt" 共用的解析。非法值抛 ArgumentException，调用方不得吞成"没填"。</summary>
+        public static TexFormat? ParseDxt(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            switch (value.Trim().ToLowerInvariant())
+            {
+                case "dxt1": case "1": return TexFormat.DXT1;
+                case "dxt3": case "3": return TexFormat.DXT3;
+                case "dxt5": case "5": return TexFormat.DXT5;
+                default:
+                    throw new ArgumentException($"dxt 目标只认 dxt1/dxt3/dxt5，给的是 '{value}'");
+            }
         }
     }
 

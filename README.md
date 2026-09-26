@@ -127,13 +127,14 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 
 | Key | Type | Default | Meaning | CLI equivalent |
 | --- | --- | --- | --- | --- |
-| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg`; `pkg` = convert a mobile package back to a PC `.pkg`; `pack` = pack a project directory into a PC `.pkg` (see below) | - |
+| `mode` | string | `extract` | `extract` = unpack to files; `mpkg` = rewrite the package as a mobile `.mpkg`; `pkg` = convert a mobile package back to a PC `.pkg`; `pack` = pack a project directory into a PC `.pkg` (see below); `inspect` = read-only health check, writes nothing (see below) | - |
 | `threads` | int | 0 | worker threads, 0 = physical core count (narrowed by the cgroup CPU quota) | `--threads` (wins over this) |
 | `wallpapers` | array | - | jobs, one item per wallpaper; required | - |
 | `wallpapers[].id` | string | - | echoed back in every event of this wallpaper | - |
-| `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them; `mode: pack` wants a project directory instead (or a parent of several) | `<input>` |
+| `wallpapers[].input` | string | - | a `.pkg`/`.mpkg` file, or a directory searched recursively for them; `mode: pack` wants a project directory instead (or a parent of several); `mode: inspect` never writes, so it is the one mode that does not need `output` | `<input>` |
 | `wallpapers[].output` | string | - | output directory for this wallpaper | `--output` |
 | `wallpapers[].outputName` | string | source package name (pack: project folder name) | `mode: mpkg` / `mode: pkg` / `mode: pack` - file name (without extension) of the produced `.mpkg`/`.pkg`; invalid characters are replaced with `_`, and a wallpaper that yields several packages gets `_<source-name>` appended so they don't overwrite each other | `-n, --name` (pack) |
+| `wallpapers[].options` | object | every key falls back to global `options` | `mode: mpkg` only (`mode: inspect` reads the same keys to describe what a tier would do) - per-entry overrides for the nine packing keys (`preset` / `mpkgMagic` / `keepAudio` / `noLz4` / `mpkgReduction` / `mpkgEtc2` / `mpkgNoShaderCompat` / `mpkgNoDematerialize` / `mpkgShrinkDx`). Only keys actually present override, so an entry can change just the reduction and inherit the rest; an entry `preset` fills only the two cells that entry did not write, so precedence is explicit key > entry preset > global (preset included) > default. A combination that is only illegal *after* merging (e.g. `mpkgEtc2` on an entry whose resolved `mpkgReduction` is 1) fails the manifest at load time - nothing gets packed. Lets a caller send one batch instead of one batch per preset | `-` |
 | `options.overwrite` | bool | false | overwrite existing files | `--overwrite` |
 | `options.onlypaths` | string[] | none | directory prefixes to keep | `--onlypaths` |
 | `options.ignorepaths` | string[] | none | directory prefixes to drop | `--ignorepaths` |
@@ -149,9 +150,12 @@ Manifest keys are matched case-insensitively (`onlyPaths` and `onlypaths` are th
 | `options.mpkgMagic` | string | `PKGM0019` | `mode: mpkg` only - magic written into the output package | - |
 | `options.keepAudio` | bool | false | `mode: mpkg` only - keep `sounds/*.mp3` instead of dropping them | - |
 | `options.noLz4` | bool | false | `mode: mpkg` only - don't try to LZ4-compress materialized pixels | - |
-| `options.mpkgReduction` | int | 1 | `mode: mpkg` only - texture downscale divisor (WE's 2x / 4x presets). Only entries that get materialized are resized; the size is also recorded as `"texturereduction"` in the scene file | - |
+| `options.preset` | string | - | `mode: mpkg` only - one of `1x` / `2x` / `4x` (case-insensitive; the `×` glyph is accepted too), expanding to WE's own three-tier pair: `1x` = `mpkgReduction: 1` + no ETC2, `2x` = `2` + ETC2, `4x` = `4` + ETC2. It only fills in keys you did not write - an explicit `mpkgReduction` / `mpkgEtc2` in the same block wins, which is how "2x but keep RGBA8" stays expressible. An unknown name is a manifest error (exit 1), never a silent fallback to `1x` | - |
+| `options.mpkgReduction` | int | 1 | `mode: mpkg` only - texture downscale divisor (any value >= 1; the presets above use 1/2/4). Only entries that get materialized are resized; the size is also recorded as `"texturereduction"` in the scene file | - |
 | `options.mpkgEtc2` | bool | false | `mode: mpkg` only - emit reduced pixels as ETC2 RGBA8 (`format=5`, 1 byte/pixel) instead of RGBA8. Requires `mpkgReduction > 1`; not yet verified on a phone, hence off by default | - |
 | `options.mpkgNoShaderCompat` | bool | false | `mode: mpkg` only - `true` turns off the GLSL → GLSL ES rewrite that appends `.0` to integer literals sitting in a float context. Mobile GLSL has no implicit int→float, so a shader that fails to compile makes its material fall back to the base texture and the layer shows up as a plain white rectangle. Every rewrite is reported per package as `着色器改写 N条/M处` | - |
+| `options.mpkgNoDematerialize` | bool | false | `mode: mpkg` only - `true` copies every `.tex` verbatim instead of materializing it to RGBA8/ETC2, i.e. "same container, same pixels". Shader rewrites still happen (that is not pixel work); with `mpkgReduction > 1` it emits an error-level warning and leaves `texturereduction` out of the scene file, because nothing actually shrank. The reverse path spells the same idea without the prefix (`noDematerialize`, `mode: pkg` only) - the two keys are read from one `options` block, so writing the wrong one is silently ignored by the mode you asked for | - |
+| `options.mpkgShrinkDx` | bool | false | `mode: mpkg` only - also decode-and-resize `DXT1/3/5` payloads instead of copying them byte for byte. Off by default because that path was previously reached only together with `mpkgEtc2` (whose bytes are the phone-verified ones), and DXT is cheaper than RGBA8: on a DXT1 wallpaper `mpkgReduction: 2` with ETC2 off makes the package roughly twice as large, not smaller. Inert when `mpkgReduction` is 1 - no error, since a global key plus a per-entry 1× is a normal manifest shape. Counted per package as `DXT重缩 N` | - |
 | `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` and `mode: pack` - magic written into the output PC package | `--magic` (pack) |
 | `options.noDematerialize` | bool | false | `mode: pkg` only - `true` copies materialized RGBA8 textures verbatim instead of re-encoding them back to a PNG passthrough blob (useful when debugging the reverse path) | - |
 | `options.keepReductionKey` | bool | false | `mode: pkg` only - `true` keeps the `"texturereduction"` key in `scene.json` instead of removing it | - |
@@ -242,6 +246,12 @@ Per entry, exactly one of these happens:
 - **everything else is copied byte for byte**, including DXT1/3/5 textures with their full mip chains,
   R8/RG88 masks, video textures (an mp4 embedded in a `.tex`), models and JSON. Textures the
   reader cannot parse are copied as well, so an unknown format never blocks a conversion.
+  The one way a `.tex` stops being copied is a reduction: with `mpkgReduction > 1` a DXT payload is
+  decoded and resized too once `mpkgEtc2` is on (that pairing is the phone-verified shape) or once
+  `mpkgShrinkDx` asks for it on its own. On DXT that decode is what makes a reduction possible at all -
+  and DXT costs fewer bytes than RGBA8, so `mpkgShrinkDx` without `mpkgEtc2` can make the package bigger
+  than it started. Set `mpkgNoDematerialize` to copy every `.tex` regardless -
+  that is the "same pixels, new container" package.
 - `.frag`/`.vert` sources are copied byte for byte **except** that an integer literal standing in a float
   context gets a `.0` suffix (the rewrite is insert-only: the output equals the input with `".0"` spliced in
   after `N` literals, and nothing else changes). Mobile GLSL has no implicit int→float, so an unpatched
@@ -309,6 +319,37 @@ Manifest format (0 = physical core count for threads; options match extract):
 }
 ```
  
+#### mode: "inspect" - read-only health check, writes nothing
+
+```
+{ "mode": "inspect", "wallpapers": [ { "id": "1", "input": "C:/.../431960/123", "options": { "preset": "4x" } } ],
+  "options": { "preset": "2x" } }
+```
+
+The reason this mode exists is one silent behaviour of `mpkg`: a `.tex` it copies says nothing about
+*why*. A wallpaper whose textures are all DXT5 comes out the same size at `1x` and at `4x`, and the only
+reading is `缩小 0` - which does not distinguish "nothing here can shrink" from "the switch that would
+have shrunk it is off". The probe replays the converter's own predicate (`MobileTextureMaterializer.WouldReduce`,
+same class that decides what to materialize) over structure-only TEX reads, so a caller can say
+"68.5% of this package's bytes are DXT5; without ETC2 or shrink-Dx no tier will move them" *before* the batch.
+
+It reads no pixels and writes no file, so `wallpapers[].output` may be left out. The tier keys it understands
+are exactly the `mode: mpkg` ones - `preset` / `mpkgReduction` / `mpkgEtc2` / `mpkgShrinkDx` /
+`mpkgNoDematerialize`, per entry or global, same precedence - because a probe that disagreed with the
+converter about what a tier means would be worse than no probe. One event per package, plus the usual
+`wallpaper` start/done and `error` lines:
+
+```
+{"id":"1","type":"inspect","file":".../scene.pkg","entries":12,"bytes":1355687,"tex":1,"texBytes":1343778,
+ "passthrough":0,"dxt":1,"dxtBytes":1343778,"raw":0,"mask":0,"video":0,"noimages":0,"unreadable":0,
+ "audio":0,"audioBytes":0,"scene":true,"reduction":4,"etc2":false,"shrinkDx":false,"dematerialize":true,
+ "wouldReduce":0,"largestTex":1343778,"failed":false}
+```
+
+`passthrough + dxt + raw + mask + video + noimages + unreadable == tex` always holds. `wouldReduce` is the
+number of `.tex` entries that tier really resizes - `0` with `tex > 0` is the "缩不动" signal, and with
+`dematerialize: false` it is forced to `0` because that is what the package will show.
+
 ### Examples
 Simply extract PKG and convert TEX entries into images to output folder created in current directory
 ```

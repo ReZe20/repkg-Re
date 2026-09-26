@@ -11,6 +11,24 @@ using SixLabors.ImageSharp.Processing;
 
 namespace RePKG_Re.Application.Texture
 {
+    /// <summary>
+    /// 一条 .tex 在正向转换里落在哪一格。只由头部 + 容器头决定，所以不读载荷就能分类 ——
+    /// 这是转换器与只读探针共用的一份判据（两边各自 if 一遍，迟早会分叉）。
+    /// </summary>
+    public enum MobileTexKind
+    {
+        /// <summary>载荷是内嵌 mp4，解成像素会直接写坏</summary>
+        Video,
+        /// <summary>没有 image 容器或容器空：没有像素可动</summary>
+        NoImages,
+        /// <summary>载荷是一段 PNG/JPEG 直通 blob：物化（以及缩小）的主战场</summary>
+        Passthrough,
+        /// <summary>DXT1/3/5 块格式：只有开了重编开关才会解码重缩</summary>
+        DxtBlock,
+        /// <summary>已经是原始像素 / R8 / RG88 遮罩：真机验过的形态，照搬</summary>
+        RawPixels
+    }
+
     /// <summary>物化结果的动作。</summary>
     public enum MaterializeAction
     {
@@ -36,6 +54,8 @@ namespace RePKG_Re.Application.Texture
         public bool Reduced { get; set; }
         /// <summary>这次的像素发的是 ETC2 RGBA8（fmt5）而不是 RGBA8（fmt0）</summary>
         public bool EncodedEtc2 { get; set; }
+        /// <summary>这次的像素是从 DXT 块格式解出来的（那条"解码重缩"的路走通了，不是直通编码图）</summary>
+        public bool DxReencoded { get; set; }
         /// <summary>这次把动图帧表里的矩形跟着像素一起缩了（只有带帧容器又真缩过的条目才会）</summary>
         public bool FramesScaled { get; set; }
     }
@@ -65,8 +85,9 @@ namespace RePKG_Re.Application.Texture
         public bool UseLz4 { get; set; } = true;
 
         /// <summary>
-        /// 纹理缩小除数，对齐 WE 的"纹理缩小"下拉：1=原始、2、4。只有会被物化的条目参与，
-        /// DXT/R8/RG88/原始像素/视频都是逐字节搬运，没有可缩的机会（要缩它们得先有块编码器）。
+        /// 纹理缩小除数，对齐 WE 的"纹理缩小"下拉：1=原始、2、4。只有会被物化的条目参与：
+        /// 直通编码图一定缩，DXT 块格式要等 <see cref="EncodeEtc2"/> 或 <see cref="ShrinkDx"/> 把解码这条路开出来，
+        /// R8/RG88/原始像素/内嵌 mp4 永远是逐字节搬运（没有可缩的形态，把它们解成 RGBA8 反而是改动真机验过的字节）。
         /// </summary>
         public int Reduction { get; set; } = 1;
 
@@ -76,6 +97,19 @@ namespace RePKG_Re.Application.Texture
         /// ÷1 那条路是逐字节验过的形态，不能因为尺寸刚好 4 对齐就偷偷换编码器。
         /// </summary>
         public bool EncodeEtc2 { get; set; }
+
+        /// <summary>
+        /// DXT 块格式的载荷解码重缩（输出仍是 RGBA8）。默认关 —— 那条形路只有"同时发 fmt5"时走过，
+        /// 而 fmt5 的字节是真机验过的。开它等于把 8K 图集那类解码+采样一遍，代价是内存与时间。
+        /// </summary>
+        public bool ShrinkDx { get; set; }
+
+        /// <summary>
+        /// 这一条目在当前的 reduction/etc2/shrinkDx 下会不会真缩。只看头部和容器头，不读载荷 ——
+        /// 给只读探测用，和 <see cref="NeedsPixels"/> 走同一份判据：探测说"缩不动"而转换却缩了，
+        /// 或者反过来，都是最难查的那类不一致。
+        /// </summary>
+        public bool WouldReduce(ITex tex) => Reduction > 1 && NeedsPixels(tex);
 
         public MaterializeResult Materialize(byte[] texBytes)
         {
@@ -252,6 +286,7 @@ namespace RePKG_Re.Application.Texture
                 Height = height,
                 Reduced = resized,
                 EncodedEtc2 = encodedEtc2,
+                DxReencoded = shrinkingDx,
                 FramesScaled = framesScaled
             };
         }
@@ -263,32 +298,44 @@ namespace RePKG_Re.Application.Texture
         }
 
         /// <summary>
-        /// 这条目的像素要不要读进内存。只用到头部和容器头,所以不读载荷的探针就能回答。
+        /// 这条 .tex 属于哪一格。顺序即判据：<c>passthrough 优先于 DXT</c> —— 容器报了已知图片格式时
+        /// 读侧就走那条解码，头部 format 写着块格式也改变不了这件事，所以 <see cref="NeedsPixels"/> 必须按同一顺序判。
         /// </summary>
-        private bool NeedsPixels(ITex tex)
+        public static MobileTexKind Classify(ITex tex)
         {
-            if (tex.IsVideoTexture) return false;
+            if (tex.IsVideoTexture) return MobileTexKind.Video;
             var container = tex.ImagesContainer;
-            if (container == null || container.Images.Count == 0) return false;
-            return container.ImageFormat != FreeImageFormat.FIF_UNKNOWN || WantsDxReencode(tex);
+            if (container == null || container.Images.Count == 0) return MobileTexKind.NoImages;
+            if (container.ImageFormat != FreeImageFormat.FIF_UNKNOWN) return MobileTexKind.Passthrough;
+            return IsDxBlockFormat(tex.Header.Format) ? MobileTexKind.DxtBlock : MobileTexKind.RawPixels;
         }
 
         /// <summary>
-        /// DX 块格式（DXT5/3/1）的载荷在读侧已经被解成 RGBA8，所以"要缩小 + 有 ETC2 编码器"时可以走重编；
+        /// 这条目的像素要不要读进内存。只用到头部和容器头,所以不读载荷的探针就能回答 ——
+        /// 判据与 <see cref="Classify"/> 同一份，探测说"缩不动"而转换却缩了(或反过来)是最难查的那类不一致。
+        /// </summary>
+        private bool NeedsPixels(ITex tex)
+            => Classify(tex) == MobileTexKind.Passthrough || WantsDxReencode(tex);
+
+        /// <summary>
+        /// DX 块格式（DXT5/3/1）的载荷在读侧已经被解成 RGBA8，所以"要缩小"时可以走重解码，
+        /// 触发条件是缩小 + (发 ETC2 或 显式要求缩小 DXT)：前者是顺路，后者是为了在不改编码的前提下出对照包。
         /// 其余情况（fmt0 原始像素、R8/RG88 遮罩）继续逐字节照搬 —— 那是真机验过的形态。
         /// 动图图集一起走：WE 自己就是这么发的（3577990983 那张 5×7680×7560 的图集，PC 23,105,402B
         /// → 它发的 fmt5 移动包里 6,307,131B），代价是帧表要跟着缩，见 <see cref="ScaleFrames"/>。
         /// </summary>
         private bool WantsDxReencode(ITex tex)
-            => EncodeEtc2 && Reduction > 1 && IsDxBlockFormat(tex.Header.Format);
+            => Reduction > 1 && IsDxBlockFormat(tex.Header.Format) && (EncodeEtc2 || ShrinkDx);
 
         private static string CopyReason(ITex tex)
         {
-            if (tex.IsVideoTexture) return "视频纹理，原样搬运";
-            if (tex.ImagesContainer == null || tex.ImagesContainer.Images.Count == 0) return "无 image 容器";
-            return IsDxBlockFormat(tex.Header.Format)
-                ? "DX 块格式，本次不重编，原样搬运"
-                : "已是原始像素/R8/RG88";
+            switch (Classify(tex))
+            {
+                case MobileTexKind.Video: return "视频纹理，原样搬运";
+                case MobileTexKind.NoImages: return "无 image 容器";
+                case MobileTexKind.DxtBlock: return "DX 块格式，本次不重编，原样搬运";
+                default: return "已是原始像素/R8/RG88";
+            }
         }
 
         private readonly struct DecodeOutcome

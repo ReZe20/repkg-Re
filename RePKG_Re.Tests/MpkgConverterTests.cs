@@ -501,6 +501,246 @@ namespace RePKG_Re.Tests
                     Assert.AreEqual(dxt, e.Bytes, "不开编码时 DXT 必须逐字节照搬（真机验过的形态）");
         }
 
+        [Test]
+        public void TestConvert_Dxt5_ShrinkDxWithoutEtc2_ReshrinksToRgba8()
+        {
+            var dxt = MakeDxt5Tex(Blocks(OpaqueWhiteDxt5, OpaqueBlackDxt5, OpaqueWhiteDxt5, OpaqueBlackDxt5), 8, 8);
+            var pkg = WritePackage("scene.pkg",
+                ("materials/a.tex", dxt),
+                ("scene.json", Encoding.UTF8.GetBytes(WeStyleSceneJson)));
+            Directory.CreateDirectory(Path.Combine(_dir, "out"));
+            var target = Path.Combine(_dir, "out", "scene.mpkg");
+
+            var report = new MobilePackageConverter().Convert(pkg, target, new MobilePackageOptions
+            {
+                Reduction = 2,
+                EncodeEtc2 = false,
+                ShrinkDx = true,
+                UseLz4 = false
+            });
+
+            Assert.AreEqual(0, report.Warnings.Count, string.Join(" | ", report.Warnings));
+            Assert.AreEqual(1, report.DxReencoded, "开了缩 DXT 就要在报告里数出来");
+            Assert.AreEqual(0, report.Etc2Encoded, "缩 DXT 不等于发 fmt5：这两件事现在是分开的开关");
+
+            byte[] bytes = null;
+            foreach (var e in ReadPackage(target).Entries)
+                if (e.FullPath == "materials/a.tex") bytes = e.Bytes;
+
+            var tex = ReadTex(bytes);
+            var mip = tex.FirstImage.FirstMipmap;
+            Assert.AreEqual(TexFormat.RGBA8888, tex.Header.Format, "发出去的仍是真机验过的 fmt0");
+            Assert.AreEqual(4, mip.Width);
+            Assert.AreEqual(4, mip.Height);
+            Assert.AreEqual(4 * 4 * 4, mip.Bytes.Length, "RGBA8 是 4 字节/像素，不是 ETC2 的 1 字节");
+            Assert.AreEqual(8, tex.Header.ImageWidth, "头部四个尺寸字段照旧留原始尺寸");
+
+            // 左半白右半黑：只查尺寸的话，把块字节当像素原样写出来也能一路通过，所以这里读像素本身
+            var r0 = mip.Bytes[0];
+            var rLast = mip.Bytes[(3 * 4)];
+            Assert.Greater(r0, 200, $"第一列该是白的（DXT 解出来 255），实际 {r0}");
+            Assert.Less(rLast, 120, $"最后一列该是黑的，实际 {rLast}（Lanczos 在硬边上会振铃，不必等于 0）");
+
+            foreach (var e in ReadPackage(target).Entries)
+                if (e.FullPath == "scene.json")
+                    Assert.IsTrue(Encoding.UTF8.GetString(e.Bytes).Contains("\"texturereduction\" : 2,"),
+                        "像素真缩过就要留下那个键，否则手机按原始尺寸读");
+        }
+
+        [Test]
+        public void TestConvert_ShrinkDxWithoutReduction_IsInertNotFatal()
+        {
+            // ÷1 是逐字节验过的形态。这条锁的是"修饰键不报错也不偷偷动手"：
+            // 全局写一次 mpkgShrinkDx、个别条目回落到 1× 的清单很常见，报错会让整批退不出去。
+            var dxt = MakeDxt5Tex(Blocks(OpaqueWhiteDxt5, OpaqueBlackDxt5, OpaqueWhiteDxt5, OpaqueBlackDxt5), 8, 8);
+            var pkg = WritePackage("scene.pkg", ("materials/a.tex", dxt));
+            Directory.CreateDirectory(Path.Combine(_dir, "out"));
+            var target = Path.Combine(_dir, "out", "scene.mpkg");
+
+            var report = new MobilePackageConverter().Convert(pkg, target, new MobilePackageOptions
+            {
+                Reduction = 1,
+                ShrinkDx = true,
+                UseLz4 = false
+            });
+
+            Assert.AreEqual(0, report.DxReencoded);
+            Assert.AreEqual(0, report.Warnings.Count);
+            foreach (var e in ReadPackage(target).Entries)
+                if (e.FullPath == "materials/a.tex") Assert.AreEqual(dxt, e.Bytes);
+        }
+
+        [Test]
+        public void TestConvert_NoDematerialize_CopiesEveryTexAndSaysSo()
+        {
+            var png = MakePng(37, 19);
+            var passthrough = MakePassthroughTex(png, 37, 19);
+            var dxt = MakeDxt5Tex(Blocks(OpaqueWhiteDxt5, OpaqueBlackDxt5, OpaqueWhiteDxt5, OpaqueBlackDxt5), 8, 8);
+            var pkg = WritePackage("scene.pkg",
+                ("materials/icon.tex", passthrough),
+                ("materials/a.tex", dxt),
+                ("scene.json", Encoding.UTF8.GetBytes(WeStyleSceneJson)));
+            Directory.CreateDirectory(Path.Combine(_dir, "out"));
+            var target = Path.Combine(_dir, "out", "scene.mpkg");
+
+            var report = new MobilePackageConverter().Convert(pkg, target, new MobilePackageOptions
+            {
+                Reduction = 2,
+                Dematerialize = false,
+                UseLz4 = false
+            });
+
+            Assert.AreEqual(0, report.Materialized, "关物化就不该有任何一条被重写");
+            Assert.AreEqual(2, report.TexturesKept, "摘要要说清这次的\"物化 0\"是你关的，不是包里没东西");
+            // 这条必须是 error 级：否则产物会带着 texturereduction 键发出满尺寸纹理
+            Assert.AreEqual(1, report.Warnings.Count, string.Join(" | ", report.Warnings));
+            StringAssert.Contains("物化", report.Warnings[0]);
+
+            foreach (var e in ReadPackage(target).Entries)
+                if (e.FullPath == "materials/icon.tex") Assert.AreEqual(passthrough, e.Bytes);
+                else if (e.FullPath == "materials/a.tex") Assert.AreEqual(dxt, e.Bytes);
+                else if (e.FullPath == "scene.json")
+                    Assert.AreEqual(WeStyleSceneJson, Encoding.UTF8.GetString(e.Bytes),
+                        "纹理一字节不动时那个键描述的就是 1×，写进去就是假账");
+        }
+
+        [Test]
+        public void TestConvert_NoDematerialize_StillPatchesShaders()
+        {
+            // 那道闸只管 .tex：着色器改写和容器/loose 那几件事与像素无关，关掉物化也得照做。
+            var body = "float volume = 2;\n";
+            var pkg = WritePackage("scene.pkg",
+                ("shaders/audio.frag", Encoding.UTF8.GetBytes(body)),
+                ("materials/icon.tex", MakePassthroughTex(MakePng(8, 8), 8, 8)));
+            Directory.CreateDirectory(Path.Combine(_dir, "out"));
+            var target = Path.Combine(_dir, "out", "scene.mpkg");
+
+            var report = new MobilePackageConverter().Convert(pkg, target, new MobilePackageOptions
+            {
+                Reduction = 1,
+                Dematerialize = false
+            });
+
+            Assert.AreEqual(1, report.ShadersRewritten);
+            Assert.AreEqual(0, report.Warnings.Count, "没要求缩小就不该有那条自相矛盾警告");
+            foreach (var e in ReadPackage(target).Entries)
+                if (e.FullPath == "shaders/audio.frag")
+                    Assert.AreEqual("float volume = 2.0;\n", Encoding.UTF8.GetString(e.Bytes));
+        }
+
+        // ---------- 只读探针：必须和转换器给出同一个答案 ----------
+
+        /// <summary>一张"每种形态各来一条"的包：直通 / DXT5 / 读不动的垃圾 / mp3 / scene.json。</summary>
+        private static (byte[] Passthrough, byte[] Dxt, byte[] Garbage) MakeProbeTexSet()
+        {
+            return (
+                MakePassthroughTex(MakePng(8, 8), 8, 8),
+                MakeDxt5Tex(Blocks(OpaqueWhiteDxt5, OpaqueBlackDxt5, OpaqueWhiteDxt5, OpaqueBlackDxt5), 8, 8),
+                new byte[64]); // 够长，读取器会真去解析然后抛 —— 与转换器的"解析失败即照搬"同一种处置
+        }
+
+        [Test]
+        public void TestProbe_ClassifiesEveryTex_AndCountsAudioAndScene()
+        {
+            var (pass, dxt, garbage) = MakeProbeTexSet();
+            var pkg = WritePackage("scene.pkg",
+                ("materials/pass.tex", pass),
+                ("materials/dx.tex", dxt),
+                ("materials/broken.tex", garbage),
+                ("sounds/track.mp3", Encoding.UTF8.GetBytes("pretend audio")),
+                ("scene.json", Encoding.UTF8.GetBytes(WeStyleSceneJson)));
+
+            var probe = MobilePackageProbe.Probe(pkg, new MobilePackageOptions());
+
+            Assert.IsNull(probe.Failure);
+            Assert.AreEqual(5, probe.Entries);
+            Assert.AreEqual(3, probe.Tex);
+            Assert.AreEqual(1, probe.Passthrough);
+            Assert.AreEqual(1, probe.Dxt);
+            Assert.AreEqual(dxt.Length, probe.DxtBytes, "DXT 那一条占了包里多大一块，正是\"为什么缩了个寂寞\"的答案");
+            Assert.AreEqual(1, probe.Unreadable);
+            Assert.AreEqual(1, probe.Audio);
+            Assert.IsTrue(probe.HasSceneJson);
+            // 恒等式：探针报的形态格子必须正好铺满 .tex 计数，谁都不能凭空多出来或漏掉
+            Assert.AreEqual(probe.Tex,
+                probe.Passthrough + probe.Dxt + probe.Raw + probe.Mask + probe.Video + probe.NoImages + probe.Unreadable);
+            Assert.GreaterOrEqual(probe.LargestTexBytes, dxt.Length);
+        }
+
+        [Test]
+        public void TestProbe_WouldReduce_FollowsTheSameSwitchesAsTheConverter()
+        {
+            var (pass, dxt, garbage) = MakeProbeTexSet();
+            var pkg = WritePackage("scene.pkg",
+                ("materials/pass.tex", pass),
+                ("materials/dx.tex", dxt),
+                ("materials/broken.tex", garbage));
+
+            // ÷1：直通也不缩，因为压根不要求缩
+            Assert.AreEqual(0, Probe(pkg, r: 1).WouldReduce);
+            // ÷2 不开任何重编：只有直通那条会动，DXT 照搬
+            Assert.AreEqual(1, Probe(pkg, r: 2).WouldReduce);
+            // ÷2 + fmt5：DXT 跟着一起动（真机验过的那对）
+            Assert.AreEqual(2, Probe(pkg, r: 2, etc2: true).WouldReduce);
+            // ÷2 + 只开缩 DXT：同样是 2 条，发出去的却是 RGBA8
+            Assert.AreEqual(2, Probe(pkg, r: 2, shrinkDx: true).WouldReduce);
+            // 关物化：0 条 —— 这一格必须和产物的"物化 0"对上，哪怕档位仍是 ÷2
+            Assert.AreEqual(0, Probe(pkg, r: 2, etc2: true, dematerialize: false).WouldReduce);
+        }
+
+        /// <summary>
+        /// 探针与转换器的同源闸门：同一个包、同一套选项，探针说"会缩几条"，转换就跑出"缩小几条"。
+        /// 两边各写一遍判据的话这条断言迟早变红 —— 而那正是它存在的意义。
+        /// </summary>
+        [Test]
+        public void TestProbe_AgreesWithConverter_OnWhatActuallyShrank()
+        {
+            var (pass, dxt, garbage) = MakeProbeTexSet();
+            var pkg = WritePackage("scene.pkg",
+                ("materials/pass.tex", pass),
+                ("materials/dx.tex", dxt),
+                ("materials/broken.tex", garbage),
+                ("scene.json", Encoding.UTF8.GetBytes(WeStyleSceneJson)));
+
+            foreach (var etc2 in new[] {true, false})
+            foreach (var shrinkDx in new[] {true, false})
+            {
+                var options = new MobilePackageOptions
+                {
+                    Reduction = 2, EncodeEtc2 = etc2, ShrinkDx = shrinkDx, UseLz4 = false
+                };
+
+                var expected = MobilePackageProbe.Probe(pkg, options).WouldReduce;
+
+                Directory.CreateDirectory(Path.Combine(_dir, "out"));
+                var report = new MobilePackageConverter().Convert(pkg,
+                    Path.Combine(_dir, "out", $"probe_{etc2}_{shrinkDx}.mpkg"), options);
+
+                Assert.AreEqual(expected, report.Reduced,
+                    $"etc2={etc2} shrinkDx={shrinkDx}：探针说 {expected} 条，转换却说 {report.Reduced} 条");
+            }
+        }
+
+        [Test]
+        public void TestProbe_NotAPackage_FailsInsteadOfThrowing()
+        {
+            var file = Path.Combine(_dir, "not-a-pkg.pkg");
+            Directory.CreateDirectory(_dir);
+            File.WriteAllBytes(file, new byte[] {1, 2, 3, 4});
+
+            var probe = MobilePackageProbe.Probe(file, new MobilePackageOptions());
+
+            Assert.IsNotNull(probe.Failure, "表都读不动的包要给出可上报的失败，不是裸抛异常");
+            Assert.AreEqual(0, probe.Tex);
+        }
+
+        private static PackageProbe Probe(string pkg, int r, bool etc2 = false, bool shrinkDx = false,
+            bool dematerialize = true)
+            => MobilePackageProbe.Probe(pkg, new MobilePackageOptions
+            {
+                Reduction = r, EncodeEtc2 = etc2, ShrinkDx = shrinkDx, Dematerialize = dematerialize, UseLz4 = false
+            });
+
         /// <summary>缩小路径的像素内容闸门：全零载荷在"只查尺寸"的断言下能一路通过，真机才会露馅。</summary>
         [Test]
         public void TestConvert_Reduction2_PixelsAreResizedContent_NotBlank()

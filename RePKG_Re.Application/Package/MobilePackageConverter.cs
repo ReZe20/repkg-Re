@@ -35,6 +35,22 @@ namespace RePKG_Re.Application.Package
         /// </summary>
         public bool ShaderCompat { get; set; } = true;
 
+        /// <summary>
+        /// 把非 raw 纹理物化成 RGBA8/ETC2。关掉之后所有 <c>.tex</c> 逐字节照搬 ——
+        /// 逆向那条路有同名开关(<c>PcPackageOptions.Dematerialize</c>)而正向一直没有,这是能力缺口不是悬空键:
+        /// 想做"只改容器魔数、像素一字节不动"的对照包就得靠它。着色器改写不受影响;
+        /// 纹理一字节不动时 scene.json 的 texturereduction 也不会写(那条键描述的是像素,不是请求)。
+        /// </summary>
+        public bool Dematerialize { get; set; } = true;
+
+        /// <summary>
+        /// DXT 块格式的载荷要不要解码重缩。默认只在同时发 fmt5 时做（那是真机验过的那条形路）；
+        /// 开它等于把那张图集整个解码+采样一遍，代价是内存与时间。
+        /// 只在 <see cref="Reduction"/> &gt; 1 时有意义：<c>mpkgEtc2</c> 与 <c>mpkgShrinkDx</c> 任一为真都会走这条路，
+        /// 区别只在发出去的是 fmt5 还是 RGBA8。
+        /// </summary>
+        public bool ShrinkDx { get; set; }
+
         /// <summary>同级 loose project.json 路径；包内已有同名条目时忽略</summary>
         public string ProjectJsonPath { get; set; }
 
@@ -53,8 +69,14 @@ namespace RePKG_Re.Application.Package
         public int Reduced { get; set; }
         public bool ReductionRecorded { get; set; }
 
+        /// <summary>关物化时照搬出去的 .tex 条数 —— 摘要行要说清"物化 0"是"没得物化"还是"你关的"。</summary>
+        public int TexturesKept { get; set; }
+
         /// <summary>物化后发 ETC2(fmt5)的条目数</summary>
         public int Etc2Encoded { get; set; }
+
+        /// <summary>走"解码重缩"那条路的 DXT 条目数 —— 一次跑七八条 DXT5 同时照搬的情况没上过真机，靠这个数定位。</summary>
+        public int DxReencoded { get; set; }
 
         /// <summary>像素被缩过、因此帧表也跟着缩过的动图条目数</summary>
         public int FramesScaled { get; set; }
@@ -112,9 +134,7 @@ namespace RePKG_Re.Application.Package
             // outputDataStart 是我正在写的这张新表的尾巴。两者字节数不同（条目数、名字长度都变了），
             // 拿后者去读前者会整体错位，症状正是"长度对、内容全错"。
             var plan = BuildPlan(inputPkgPath, options, report, out var inputDataStart);
-            _materializer.UseLz4 = options.UseLz4;
-            _materializer.Reduction = options.Reduction > 1 ? options.Reduction : 1;
-            _materializer.EncodeEtc2 = options.EncodeEtc2 && _materializer.Reduction > 1;
+            Configure(_materializer, options);
 
             using var input = new FileStream(inputPkgPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             using var output = new FileStream(outputMpkgPath, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
@@ -144,7 +164,7 @@ namespace RePKG_Re.Application.Package
                 var item = plan[i];
                 entryProgress?.Invoke(i + 1, plan.Count, item.Name);
 
-                var bytes = Produce(item, inputDataStart, input, report);
+                var bytes = Produce(item, inputDataStart, input, report, options);
 
                 output.Seek(outputDataStart + offset, SeekOrigin.Begin);
                 output.Write(bytes, 0, bytes.Length);
@@ -161,7 +181,26 @@ namespace RePKG_Re.Application.Package
             if (output.Length != outputDataStart + offset)
                 throw new InvalidOperationException("写完自检失败：文件大小 != 表尾 + Σ条目长度");
 
+            // 关物化 + 要求缩小 = 一个字节都不会缩。这必须是"每一条都是错"的那类，
+            // 否则产物会带着 texturereduction 键发出满尺寸纹理，比报错难查得多。
+            if (!options.Dematerialize && _materializer.Reduction > 1)
+                report.Warnings.Add(
+                    $"关物化(dematerialize=false)时纹理一字节不动，缩小 ÷{_materializer.Reduction} 没有生效；" +
+                    "scene.json 也因此没写 texturereduction");
+
             return report;
+        }
+
+        /// <summary>
+        /// 转换器和只读探针共用的那一段参数落地。<b>必须只有一份</b>：探针靠重放这几行来回答"这个档位在这张
+        /// 壁纸上到底会不会动手"，两边各写一遍的话，探针说有、转换说没有（或反过来）就是最难查的那种不一致。
+        /// </summary>
+        internal static void Configure(MobileTextureMaterializer materializer, MobilePackageOptions options)
+        {
+            materializer.UseLz4 = options.UseLz4;
+            materializer.Reduction = options.Reduction > 1 ? options.Reduction : 1;
+            materializer.EncodeEtc2 = options.EncodeEtc2 && materializer.Reduction > 1;
+            materializer.ShrinkDx = options.ShrinkDx;
         }
 
         private List<PlanItem> BuildPlan(
@@ -226,15 +265,18 @@ namespace RePKG_Re.Application.Package
             return new PackageReader {ReadEntryBytes = false}.ReadFrom(reader);
         }
 
-        private byte[] Produce(PlanItem item, int inputDataStart, Stream input, MobilePackageReport report)
+        private byte[] Produce(PlanItem item, int inputDataStart, Stream input, MobilePackageReport report,
+            MobilePackageOptions options)
         {
             if (item.LooseFile != null)
                 return File.ReadAllBytes(item.LooseFile);
 
             var bytes = PackageReader.ReadEntryBytesFromStream(input, inputDataStart, item.Source.Offset, item.Source.Length);
 
+            // 键要说的是"这个包里的纹理缩了几倍"。关物化时它是 1(没缩),照抄请求值就是假账。
             if (item.IsSceneFile)
-                return RecordReduction(bytes, item, report, _materializer.Reduction);
+                return RecordReduction(bytes, item, report,
+                    options.Dematerialize ? _materializer.Reduction : 1);
 
             if (item.NeedsCompat)
                 return ApplyShaderCompat(bytes, item, report);
@@ -242,6 +284,14 @@ namespace RePKG_Re.Application.Package
             if (!item.Name.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
             {
                 report.Copied++;
+                return bytes;
+            }
+
+            // 关物化:.tex 一字节不动。上面那两行(scene.json / 着色器)已经处理过了,那两件事不属于"物化"。
+            if (!options.Dematerialize)
+            {
+                report.Copied++;
+                report.TexturesKept++;
                 return bytes;
             }
 
@@ -253,6 +303,7 @@ namespace RePKG_Re.Application.Package
                     report.Materialized++;
                     if (result.Reduced) report.Reduced++;
                     if (result.EncodedEtc2) report.Etc2Encoded++;
+                    if (result.DxReencoded) report.DxReencoded++;
                     if (result.FramesScaled) report.FramesScaled++;
                     return result.Bytes;
 

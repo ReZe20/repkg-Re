@@ -24,14 +24,14 @@ namespace RePKG_Re.Command
     {
         private const int MaxWallpaperConcurrency = 2;
 
-        private readonly MobilePackageOptions _options;
+        private readonly Func<BatchWallpaper, MobilePackageOptions> _resolveOptions;
         private readonly List<BatchWallpaper> _wallpapers;
         private readonly int _threads;
         private readonly bool _overwrite;
 
-        public MpkgRunner(MobilePackageOptions options, List<BatchWallpaper> wallpapers, int threads, bool overwrite)
+        public MpkgRunner(Func<BatchWallpaper, MobilePackageOptions> resolveOptions, List<BatchWallpaper> wallpapers, int threads, bool overwrite)
         {
-            _options = options;
+            _resolveOptions = resolveOptions;
             _wallpapers = wallpapers;
             _threads = Math.Max(1, Math.Min(threads, MaxWallpaperConcurrency));
             _overwrite = overwrite;
@@ -121,17 +121,11 @@ namespace RePKG_Re.Command
                 return;
             }
 
-            var options = new MobilePackageOptions
-            {
-                Magic = _options.Magic,
-                DropAudio = _options.DropAudio,
-                UseLz4 = _options.UseLz4,
-                Reduction = _options.Reduction,
-                EncodeEtc2 = _options.EncodeEtc2,
-                ShaderCompat = _options.ShaderCompat,
-                ProjectJsonPath = FindLoose(pkg, "project.json"),
-                PreviewPath = FindPreview(pkg)
-            };
+            // 按这条壁纸解析(条目级覆盖已在清单侧解析并在 Validate 里校验过)。
+            // 每包拿新实例:下面两个 loose 字段写在实例上,不会串到下一张壁纸。
+            var options = _resolveOptions(wallpaper);
+            options.ProjectJsonPath = FindLoose(pkg, "project.json");
+            options.PreviewPath = FindPreview(pkg);
 
             var converter = new MobilePackageConverter();
 
@@ -147,8 +141,14 @@ namespace RePKG_Re.Command
             var reduced = options.Reduction > 1
                 ? $" 缩小 {report.Reduced}(÷{options.Reduction}) 场景键 {(report.ReductionRecorded ? "已写" : "未写")}" +
                   (options.EncodeEtc2 ? $" fmt5 {report.Etc2Encoded}" : "") +
+                  // DXT 那条解码路平时是跟着 fmt5 一起走的,所以开着没数也要报:一张壁纸里 7 条 DXT5
+                  // 同时被重编这种情况没上过真机,读数得能看出这次到底动了几条。
+                  (options.ShrinkDx || report.DxReencoded > 0 ? $" DXT重缩 {report.DxReencoded}" : "") +
                   (report.FramesScaled > 0 ? $" 帧表 {report.FramesScaled}" : "")
                 : "";
+
+            // 物化 0 有两种意思:"包里没有可物化的东西"和"你把物化关了"。产物字节完全不同,不能都读成 0。
+            var kept = options.Dematerialize ? "" : $" 物化关 {report.TexturesKept}条照搬";
 
             // 这串必须无条件报：真机上一块白，要能分清是"改写没跑到"还是"改写不到位"，
             // 而 0 条本身就是读数 —— 不含整数字面量的着色器包不该被改动。
@@ -159,7 +159,7 @@ namespace RePKG_Re.Command
             Console.WriteLine(
                 $"* mpkg {pkg.Name} → {Path.GetFileName(target)}  " +
                 $"{report.InputBytes}→{report.OutputBytes}B 条目 {report.Entries} 物化 {report.Materialized} " +
-                $"搬运 {report.Copied} 丢弃 {report.Dropped}{reduced}{compat}");
+                $"搬运 {report.Copied} 丢弃 {report.Dropped}{kept}{reduced}{compat}");
 
             // 逐文件明细走 stdout 注释行，不进事件协议：前端只解析带 '{' 的行，
             // 而报错通道 report.Warnings 的语义是"该做的没做成"，例行播报混进去会让成功看起来像失败。
@@ -217,7 +217,9 @@ namespace RePKG_Re.Command
                 $"{{\"id\":{J(id)},\"type\":\"entry\",\"entry\":{J(entry)},\"pos\":{pos},\"total\":{cursor.Total}}}");
         }
 
-        private static List<FileInfo> ResolvePackages(string input)
+        // internal:mode:inspect 的执行器复用同一条"什么算一个包"的规则(含 scene.pkg 排最前那条排序),
+        // 两处各写一遍迟早会分叉成分叉。
+        internal static List<FileInfo> ResolvePackages(string input)
         {
             if (File.Exists(input))
                 return IsPackage(input)

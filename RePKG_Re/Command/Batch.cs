@@ -56,7 +56,7 @@ namespace RePKG_Re.Command
             {
                 // 打包走独立执行器:输出是单个 mpkg 文件,条目必须按表序单遍写+回填,不能进全局条目队列。
                 // 壁纸级并发上限由 MpkgRunner 自己收(物化单条上限 250MB,不能按核数放大)。
-                new MpkgRunner(manifest.ToMobileOptions(), manifest.Wallpapers, threads,
+                new MpkgRunner(w => manifest.ToMobileOptions(w), manifest.Wallpapers, threads,
                     manifest.Options?.Overwrite ?? false).Run();
                 Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
                 return;
@@ -75,6 +75,14 @@ namespace RePKG_Re.Command
             {
                 // 工程目录 → PC 包。输入是目录不是包(一个目录 = 一个 .pkg),所以又是独立执行器。
                 new PackRunner(manifest.ToPackOptions(), threads).Run(manifest.Wallpapers);
+                Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
+                return;
+            }
+
+            if (manifest.IsInspect)
+            {
+                // 只读体检：不写文件，所以线程数就按调用方给的来（打包那种锁 2 的理由在这里不成立）。
+                new InspectRunner(w => manifest.ToMobileOptions(w), manifest.Wallpapers, threads).Run();
                 Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");
                 return;
             }

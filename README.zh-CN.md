@@ -112,13 +112,14 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 
 | 键 | 类型 | 默认值 | 含义 | 对应 CLI 选项 |
 | --- | --- | --- | --- | --- |
-| `mode` | string | `extract` | `extract` = 解包成文件；`mpkg` = 把包重写为移动端 `.mpkg`；`pkg` = 把移动端包转回 PC `.pkg`；`pack` = 把工程目录打成 PC `.pkg`（见下文） | - |
+| `mode` | string | `extract` | `extract` = 解包成文件；`mpkg` = 把包重写为移动端 `.mpkg`；`pkg` = 把移动端包转回 PC `.pkg`；`pack` = 把工程目录打成 PC `.pkg`（见下文）；`inspect` = 只读体检，一个字节都不写（见下文） | - |
 | `threads` | int | 0 | 工作线程数，0 = 物理核心数（有 cgroup CPU 配额时按配额收窄） | `--threads`（优先生效） |
 | `wallpapers` | array | - | 任务列表，每项一个壁纸；必填 | - |
 | `wallpapers[].id` | string | - | 该壁纸的每条事件里都会原样回显 | - |
-| `wallpapers[].input` | string | - | 一个 `.pkg`/`.mpkg` 文件，或一个被递归搜索的目录；`mode: pack` 要的是工程目录（或多个工程目录的父目录） | `<input>` |
+| `wallpapers[].input` | string | - | 一个 `.pkg`/`.mpkg` 文件，或一个被递归搜索的目录；`mode: pack` 要的是工程目录（或多个工程目录的父目录）；`mode: inspect` 什么都不写，是唯一不需要 `output` 的模式 | `<input>` |
 | `wallpapers[].output` | string | - | 该壁纸的输出目录 | `--output` |
 | `wallpapers[].outputName` | string | 源包名 | `mode: mpkg` / `mode: pkg` - 产出的 `.mpkg`/`.pkg` 文件名（不含扩展名）；非法字符替换为 `_`；产出多个包的壁纸会自动追加 `_<源包名>` 以免互相覆盖 | - |
+| `wallpapers[].options` | object | 逐键回落全局 `options` | 仅 `mode: mpkg` 生效（`mode: inspect` 读同一批键，用来回答"某个档位会做什么"）：条目级覆盖那九个打包键（`preset` / `mpkgMagic` / `keepAudio` / `noLz4` / `mpkgReduction` / `mpkgEtc2` / `mpkgNoShaderCompat` / `mpkgNoDematerialize` / `mpkgShrinkDx`）。只有写了的键才覆盖，所以一条壁纸可以只改档位、其余照旧；条目级 `preset` 也只补这条没写的两格，优先级是 显式键 > 条目预设 > 全局（含全局预设）> 缺省。合并之后才成立的非法组合（比如某条解析出的 `mpkgReduction` 是 1 却开着 `mpkgEtc2`）在清单加载期就报错，不会打出一半的包。有了它，调用方可以一批跑完而不是一个档一批 | - |
 | `options.overwrite` | bool | false | 覆盖已存在的文件 | `--overwrite` |
 | `options.onlypaths` | string[] | 无 | 保留的目录前缀 | `--onlypaths` |
 | `options.ignorepaths` | string[] | 无 | 丢弃的目录前缀 | `--ignorepaths` |
@@ -134,9 +135,12 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 | `options.mpkgMagic` | string | `PKGM0019` | 仅 `mode: mpkg` - 写入输出包的 magic | - |
 | `options.keepAudio` | bool | false | 仅 `mode: mpkg` - 保留 `sounds/*.mp3` 而不是删除 | - |
 | `options.noLz4` | bool | false | 仅 `mode: mpkg` - 不尝试对物化后的像素做 LZ4 压缩 | - |
-| `options.mpkgReduction` | int | 1 | 仅 `mode: mpkg` - 纹理缩小倍数（WE 的 2x / 4x 预设）。只有被物化的条目会被缩放；该倍数同时以 `"texturereduction"` 记录进场景文件 | - |
+| `options.preset` | string | - | 仅 `mode: mpkg` 生效：`1x` / `2x` / `4x` 三档之一（大小写不敏感，也收乘号 `×`），展开成 WE 自己那三档的参数对：`1x` = `mpkgReduction: 1` 且不编 ETC2，`2x` = `2` + 编，`4x` = `4` + 编。它只填"没写的格子"——同一段里显式写了 `mpkgReduction` / `mpkgEtc2` 就以键为准，所以"2× 但仍发 RGBA8"这种组合还表达得出来。名字写错是清单错误（退出码 1），绝不会当成没填悄悄退回 `1x` | - |
+| `options.mpkgReduction` | int | 1 | 仅 `mode: mpkg` - 纹理缩小倍数（`>= 1` 皆可；上面那三档用的是 1/2/4）。只有被物化的条目会被缩放；该倍数同时以 `"texturereduction"` 记录进场景文件 | - |
 | `options.mpkgEtc2` | bool | false | 仅 `mode: mpkg` - 把缩小后的像素输出为 ETC2 RGBA8（`format=5`，1 字节/像素）而不是 RGBA8。要求 `mpkgReduction > 1`；尚未在手机真机验证，故默认关闭 | - |
 | `options.mpkgNoShaderCompat` | bool | false | 仅 `mode: mpkg` - `true` 关闭 GLSL → GLSL ES 重写（给浮点上下文中的整数字面量追加 `.0`）。移动端 GLSL 没有隐式 int→float，编译失败的着色器会让材质回退到底图，图层显示为纯白矩形。每次重写按包报告为 `着色器改写 N条/M处` | - |
+| `options.mpkgNoDematerialize` | bool | false | 仅 `mode: mpkg` - `true` 让所有 `.tex` 逐字节照搬、不物化成 RGBA8/ETC2，也就是"容器换掉、像素一字节不动"的对照包。着色器改写照做（那不是像素活）；开着 `mpkgReduction > 1` 时会发一条 error 级警告，并且不把 `texturereduction` 写进场景文件，因为什么都没缩。逆向那条路同一个意思不带前缀（`noDematerialize`，仅 `mode: pkg`）—— 两组键读自同一个 `options` 块，写错前缀不会被任何一种模式读到 | - |
+| `options.mpkgShrinkDx` | bool | false | 仅 `mode: mpkg` - DXT1/3/5 载荷也解码重缩，而不是逐字节照搬。默认关：那条解码路以前只在同时开 `mpkgEtc2` 时走过（配出来才是真机验过的字节），而 DXT 每像素花的字节比 RGBA8 少 —— DXT1 的壁纸开着 `mpkgReduction: 2`、关着 ETC2 走这条，包会比进去时更大。`mpkgReduction` 为 1 时它不动手也不报错（全局写一次 + 个别条目回 1× 是清单的正常写法）。按包报告为 `DXT重缩 N` | - |
 | `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` 与 `mode: pack` - 写入输出 PC 包的 magic | `--magic`（pack） |
 | `options.noDematerialize` | bool | false | 仅 `mode: pkg` - `true` 时原样复制已物化的 RGBA8 纹理，而不是重新编码回 PNG 直通 blob（调试反向路径时有用） | - |
 | `options.keepReductionKey` | bool | false | 仅 `mode: pkg` - `true` 时保留 `scene.json` 中的 `"texturereduction"` 键而不是删除 | - |
@@ -164,7 +168,10 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
   所以直通 blob 在手机上会渲染成乱码。
 - **其余一切按字节原样复制**，包括带完整 mip 链的 DXT1/3/5 纹理、R8/RG88 遮罩、
   视频纹理（嵌在 `.tex` 里的 mp4）、模型和 JSON。读取器解析不了的纹理同样原样复制，
-  因此未知格式绝不会阻塞转换。
+  因此未知格式绝不会阻塞转换。`.tex` 停止被照搬的唯一条件是缩小：`mpkgReduction > 1` 时
+  DXT 载荷也会在 `mpkgEtc2` 开着（那才是真机验过的配对）或 `mpkgShrinkDx` 单独要求时解码重缩；
+  DXT 每像素花的字节比 RGBA8 少，所以只开 `mpkgShrinkDx` 有可能让包变大。
+  开 `mpkgNoDematerialize` 则无论档位如何都照搬 —— 那就是"像素不动、只换容器"的那一种。
 - `.frag`/`.vert` 源码按字节原样复制，**唯一例外**是浮点上下文中的整数字面量会被加上 `.0`
   后缀（重写只插入：输出等于输入在 `N` 个字面量后拼入 `".0"`，其余一字不改）。
   移动端 GLSL 没有隐式 int→float，未修补的着色器编译失败后其材质会静默回退到底图 ——
@@ -267,6 +274,34 @@ Wallpaper Engine *手机端导出*的包（区别于本工具产出的包）通�
   "options": { "overwrite": true, "onlypaths": ["materials"], "filterEffectImages": 85 }
 }
 ```
+
+#### mode: "inspect" - 只读体检，一个字节都不写
+
+```
+{ "mode": "inspect", "wallpapers": [ { "id": "1", "input": "C:/.../431960/123", "options": { "preset": "4x" } } ],
+  "options": { "preset": "2x" } }
+```
+
+它存在的理由就是 `mpkg` 的那一条静默行为：`.tex` 被照搬时什么都不解释。于是"纹理全是 DXT5"的壁纸，
+选 `1x` 和选 `4x` 的产物一样大，而读数里只有"缩小 0"—— 它分不清"这里没有能缩的东西"和"能缩它的那颗开关是关着的"。
+探针做的事就是把转换器自己那份判据（`MobileTextureMaterializer.WouldReduce`，也就是决定"这条要不要物化"的那一份）
+在只读 TEX 结构上重放一遍，好让调用方在动手**之前**就能说"这个包 68.5% 的字节是 DXT5，
+不开 ETC2 也不开缩 DXT 的话，选哪档都不会动"。
+
+它不读像素、不写文件，所以 `wallpapers[].output` 可以不给。它认识的档位键就是 `mode: mpkg` 那一套 ——
+`preset` / `mpkgReduction` / `mpkgEtc2` / `mpkgShrinkDx` / `mpkgNoDematerialize`，条目级与全局同一份优先级：
+一个跟转换器对档位的理解不一致的探针，比没有探针更糟。每个包一条事件，加上照旧的 `wallpaper` start/done 与 `error`：
+
+```
+{"id":"1","type":"inspect","file":".../scene.pkg","entries":12,"bytes":1355687,"tex":1,"texBytes":1343778,
+ "passthrough":0,"dxt":1,"dxtBytes":1343778,"raw":0,"mask":0,"video":0,"noimages":0,"unreadable":0,
+ "audio":0,"audioBytes":0,"scene":true,"reduction":4,"etc2":false,"shrinkDx":false,"dematerialize":true,
+ "wouldReduce":0,"largestTex":1343778,"failed":false}
+```
+
+`passthrough + dxt + raw + mask + video + noimages + unreadable == tex` 恒成立。`wouldReduce` 是这个档位
+真会缩掉几条 `.tex` —— `tex > 0` 而它是 `0` 就是"缩不动"的信号；`dematerialize: false` 时它被压成 `0`，
+因为那才是产物会显示的样子。
 
 ### 示例
 直接解包 PKG 并把 TEX 条目转为图片，输出到当前目录下创建的 output 文件夹

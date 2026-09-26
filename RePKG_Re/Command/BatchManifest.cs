@@ -20,7 +20,7 @@ namespace RePKG_Re.Command
 
         /// <summary>
         /// "extract"(默认,拆包成文件) | "mpkg"(整包转移动包) | "pkg"(移动包转回 PC 包) |
-        /// "pack"(反过来:把壁纸工程的散文件打成 PC 包)。四者执行器不同。
+        /// "pack"(反过来:把壁纸工程的散文件打成 PC 包) | "inspect"(只读体检:一个字节都不写)。执行器各一套。
         /// </summary>
         public string Mode { get; set; }
 
@@ -29,6 +29,9 @@ namespace RePKG_Re.Command
         public bool IsPkg => string.Equals(Mode, "pkg", StringComparison.OrdinalIgnoreCase);
 
         public bool IsPack => string.Equals(Mode, "pack", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>只读探测:回答"这个档位在这张壁纸上到底会不会动手"，不产出任何文件。</summary>
+        public bool IsInspect => string.Equals(Mode, "inspect", StringComparison.OrdinalIgnoreCase);
 
         public List<BatchWallpaper> Wallpapers { get; set; }
 
@@ -84,13 +87,22 @@ namespace RePKG_Re.Command
                         Id = LegacyJson.AsString(GetProp(item, "id")),
                         Input = LegacyJson.AsString(GetProp(item, "input")),
                         Output = LegacyJson.AsString(GetProp(item, "output")),
-                        OutputName = LegacyJson.AsString(GetProp(item, "outputName"))
+                        OutputName = LegacyJson.AsString(GetProp(item, "outputName")),
+                        Options = ParseWallpaperOptions(GetProp(item, "options"))
                     });
                 }
             }
 
             if (GetProp(root, "options") is { ValueKind: JsonValueKind.Object } o)
             {
+                var presetName = LegacyJson.AsString(GetProp(o, "preset"));
+                var hasPreset = !string.IsNullOrWhiteSpace(presetName);
+                int presetReduction = 1;
+                bool presetEtc2 = false;
+                // 非法档位名是清单写错,Load 期就抛(调用方 Batch.Action 收成 Invalid manifest + 退出码 1),
+                // 绝不能当成"没填"退回 1× —— 那会把一整批包按原始尺寸发出去。
+                if (hasPreset) MpkgPresets.Require(presetName, out presetReduction, out presetEtc2, "options.preset");
+
                 manifest.Options = new BatchOptionsModel
                 {
                     Overwrite = LegacyJson.AsBool(GetProp(o, "overwrite")) ?? false,
@@ -108,9 +120,13 @@ namespace RePKG_Re.Command
                     MpkgMagic = LegacyJson.AsString(GetProp(o, "mpkgMagic")),
                     KeepAudio = LegacyJson.AsBool(GetProp(o, "keepAudio")) ?? false,
                     NoLz4 = LegacyJson.AsBool(GetProp(o, "noLz4")) ?? false,
-                    MpkgReduction = LegacyJson.AsInt(GetProp(o, "mpkgReduction")) ?? 1,
-                    MpkgEtc2 = LegacyJson.AsBool(GetProp(o, "mpkgEtc2")) ?? false,
+                    Preset = presetName,
+                    // 预设先占缺省位,显式键覆盖它:写了 mpkgReduction/mpkgEtc2 就以它为准
+                    MpkgReduction = LegacyJson.AsInt(GetProp(o, "mpkgReduction")) ?? (hasPreset ? presetReduction : 1),
+                    MpkgEtc2 = LegacyJson.AsBool(GetProp(o, "mpkgEtc2")) ?? (hasPreset ? presetEtc2 : false),
                     MpkgNoShaderCompat = LegacyJson.AsBool(GetProp(o, "mpkgNoShaderCompat")) ?? false,
+                    MpkgNoDematerialize = LegacyJson.AsBool(GetProp(o, "mpkgNoDematerialize")) ?? false,
+                    MpkgShrinkDx = LegacyJson.AsBool(GetProp(o, "mpkgShrinkDx")) ?? false,
                     PkgMagic = LegacyJson.AsString(GetProp(o, "pkgMagic")),
                     NoDematerialize = LegacyJson.AsBool(GetProp(o, "noDematerialize")) ?? false,
                     KeepReductionKey = LegacyJson.AsBool(GetProp(o, "keepReductionKey")) ?? false,
@@ -127,6 +143,26 @@ namespace RePKG_Re.Command
         }
 
         private static JsonElement? GetProp(JsonElement? root, string name) => LegacyJson.GetProp(root, name);
+
+        /// <summary>
+        /// wallpapers[].options 的读取。整段缺省(或不是对象)返回 null = 这条完全回落全局 options;
+        /// 写了的键才覆盖,所以这里一律走可空 As*,不做 ?? 折默认。
+        /// </summary>
+        private static BatchWallpaperOptions ParseWallpaperOptions(JsonElement? node)
+            => node is { ValueKind: JsonValueKind.Object } o
+                ? new BatchWallpaperOptions
+                {
+                    Preset = LegacyJson.AsString(GetProp(o, "preset")),
+                    MpkgMagic = LegacyJson.AsString(GetProp(o, "mpkgMagic")),
+                    KeepAudio = LegacyJson.AsBool(GetProp(o, "keepAudio")),
+                    NoLz4 = LegacyJson.AsBool(GetProp(o, "noLz4")),
+                    MpkgReduction = LegacyJson.AsInt(GetProp(o, "mpkgReduction")),
+                    MpkgEtc2 = LegacyJson.AsBool(GetProp(o, "mpkgEtc2")),
+                    MpkgNoShaderCompat = LegacyJson.AsBool(GetProp(o, "mpkgNoShaderCompat")),
+                    MpkgNoDematerialize = LegacyJson.AsBool(GetProp(o, "mpkgNoDematerialize")),
+                    MpkgShrinkDx = LegacyJson.AsBool(GetProp(o, "mpkgShrinkDx"))
+                }
+                : null;
 
         /// <summary>
         /// 读平铺开关:正名键 "singleDir"(与 -s/--singledir 同名同义)优先;
@@ -152,10 +188,10 @@ namespace RePKG_Re.Command
 
         private void Validate()
         {
-            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !IsPkg && !IsPack &&
+            if (!string.IsNullOrEmpty(Mode) && !IsMpkg && !IsPkg && !IsPack && !IsInspect &&
                 !Mode.Equals("extract", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg|pkg|pack)");
+                Console.Error.WriteLine($"Invalid manifest: unknown mode \"{Mode}\" (expected extract|mpkg|pkg|pack|inspect)");
                 Environment.Exit(1);
             }
 
@@ -173,10 +209,34 @@ namespace RePKG_Re.Command
 
             foreach (var w in Wallpapers)
             {
-                if (string.IsNullOrEmpty(w.Id) || string.IsNullOrEmpty(w.Input) || string.IsNullOrEmpty(w.Output))
+                // mode:inspect 一个字节都不写，所以它不要求 output —— 让调用方编一个用不到的目录，
+                // 只会让人以为探测会往那里放东西。
+                var needed = IsInspect ? (string.IsNullOrEmpty(w.Id) || string.IsNullOrEmpty(w.Input))
+                                       : (string.IsNullOrEmpty(w.Id) || string.IsNullOrEmpty(w.Input) || string.IsNullOrEmpty(w.Output));
+                if (needed)
                 {
                     Console.Error.WriteLine("Invalid manifest: each wallpaper needs non-empty id/input/output");
                     Environment.Exit(1);
+                }
+            }
+
+            // mode:mpkg 的选项校验按条目跑一遍:条目级覆盖能拼出全局看不到的非法组合(比如某行 etc2 开着、
+            // 解析后的 reduction 却是 1),这类必须在动手前退,不能跑到那张壁纸才炸。
+            // mode:inspect 共用同一份 ToMobileOptions，所以它也走这道校验：探测和转换读的是同一套档位，
+            // 档位本身非法时两边都不该给出可信的数字。
+            if (IsMpkg || IsInspect)
+            {
+                foreach (var w in Wallpapers)
+                {
+                    try
+                    {
+                        ToMobileOptions(w);
+                    }
+                    catch (ArgumentException e)
+                    {
+                        Console.Error.WriteLine($"Invalid manifest: {e.Message}");
+                        Environment.Exit(1);
+                    }
                 }
             }
         }
@@ -204,27 +264,65 @@ namespace RePKG_Re.Command
             };
         }
 
-        /// <summary>manifest 选项 → 转包选项。project.json/preview.gif 由 runner 按每个包的位置单独填。</summary>
-        public MobilePackageOptions ToMobileOptions()
+        /// <summary>manifest 选项 → 转包选项(全局口径)。project.json/preview.gif 由 runner 按每个包的位置单独填。</summary>
+        public MobilePackageOptions ToMobileOptions() => ToMobileOptions(null);
+
+        /// <summary>
+        /// 全局 options 套上这条壁纸自己的覆盖项(wallpapers[].options)。
+        /// 校验留在这里而不是挪到调用方:Validate 与 runner 因此共用同一份口径,
+        /// 不会出现"清单校验放过、跑到第 7 张才炸"。
+        /// </summary>
+        public MobilePackageOptions ToMobileOptions(BatchWallpaper wallpaper)
         {
             var o = Options ?? new BatchOptionsModel();
+            var w = wallpaper?.Options;
+
+            // 只有条目里"写了"的键才覆盖;字符串键按非空白判定,空串等于没写
+            var magic = !string.IsNullOrWhiteSpace(w?.MpkgMagic) ? w.MpkgMagic : o.MpkgMagic;
+            var keepAudio = w?.KeepAudio ?? o.KeepAudio;
+            var noLz4 = w?.NoLz4 ?? o.NoLz4;
+            var noShaderCompat = w?.MpkgNoShaderCompat ?? o.MpkgNoShaderCompat;
+            var noDematerialize = w?.MpkgNoDematerialize ?? o.MpkgNoDematerialize;
+            var shrinkDx = w?.MpkgShrinkDx ?? o.MpkgShrinkDx;
+            var who = wallpaper is null ? "" : $"（壁纸 {wallpaper.Id}）";
+
+            // 条目级 preset 只填这条没写死的两格(全局那份在 Load 期已经折进 o.MpkgReduction/o.MpkgEtc2)。
+            // 顺序 = 显式键 > 条目预设 > 全局(含全局预设) > 缺省。
+            var explicitReduction = w?.MpkgReduction;
+            var explicitEtc2 = w?.MpkgEtc2;
+            if (!string.IsNullOrWhiteSpace(w?.Preset))
+            {
+                MpkgPresets.Require(w.Preset, out var presetReduction, out var presetEtc2,
+                    "wallpapers[].options.preset", who);
+                explicitReduction ??= presetReduction;
+                explicitEtc2 ??= presetEtc2;
+            }
+            var reduction = explicitReduction ?? o.MpkgReduction;
+            var etc2 = explicitEtc2 ?? o.MpkgEtc2;
+
             return new MobilePackageOptions
             {
-                Magic = string.IsNullOrWhiteSpace(o.MpkgMagic) ? "PKGM0019" : o.MpkgMagic,
-                DropAudio = !o.KeepAudio,
-                UseLz4 = !o.NoLz4,
-                Reduction = o.MpkgReduction switch
+                Magic = string.IsNullOrWhiteSpace(magic) ? "PKGM0019" : magic,
+                DropAudio = !keepAudio,
+                UseLz4 = !noLz4,
+                Reduction = reduction switch
                 {
-                    < 1 => throw new ArgumentException($"mpkgReduction 必须 >= 1（1=不缩，WE 的下拉只有 1/2/4），当前 {o.MpkgReduction}"),
-                    _ => o.MpkgReduction
+                    < 1 => throw new ArgumentException($"mpkgReduction 必须 >= 1（1=不缩，WE 的下拉只有 1/2/4），当前 {reduction}{who}"),
+                    _ => reduction
                 },
                 // 编码只在缩过之后才有意义（÷1 那条路是逐字节验过的形态），不缩又开编码一定是配错了
-                EncodeEtc2 = !o.MpkgEtc2
+                EncodeEtc2 = !etc2
                     ? false
-                    : o.MpkgReduction > 1
+                    : reduction > 1
                         ? true
-                        : throw new ArgumentException("mpkgEtc2 只在 mpkgReduction > 1 时有意义（÷1 发的是已验过的 RGBA8 形态）"),
-                ShaderCompat = !o.MpkgNoShaderCompat
+                        : throw new ArgumentException($"mpkgEtc2 只在 mpkgReduction > 1 时有意义（÷1 发的是已验过的 RGBA8 形态）{who}"),
+                ShaderCompat = !noShaderCompat,
+                // 这两条一律不做"必须 mpkgReduction > 1"的交叉校验，和上面的 mpkgEtc2 不同：
+                // 它们不会与档位组成非法产物（关物化只是不出缩过的像素，ShrinkDx 在下层有 Reduction > 1 前提），
+                // 而清单里全局写一次、个别条目改档位的写法很常见，报错会让整批退不出去。
+                // "关了物化又要求缩小"那种自相矛盾的清单由转换器出 error 级警告兜底。
+                Dematerialize = !noDematerialize,
+                ShrinkDx = shrinkDx
             };
         }
 
@@ -285,6 +383,61 @@ namespace RePKG_Re.Command
         /// 留空 = 用源包文件名(pack 没有源包,留空 = 用工程目录名)。非法文件名字符由 repkg 清洗,不假定调用方 sanitize 过。
         /// </summary>
         public string OutputName { get; set; }
+
+        /// <summary>
+        /// 条目级覆盖(wallpapers[].options),目前只对 mode="mpkg" 生效;缺省 = 整条回落全局 options。
+        /// 存在的意义:打包口径是每批一份,前端想给每张壁纸不同档位就得一批一起跑,而不是按档切成多批。
+        /// </summary>
+        public BatchWallpaperOptions Options { get; set; }
+    }
+
+    /// <summary>
+    /// mpkg 的三档预设。这条"除数 + 由它派生要不要编 ETC2"的规则以前在两端各写一份 —— 调用方拿它派生参数、
+    /// repkg 拿它做校验，规则一变就得同步改两处，漏一边是静默错包。挪进来之后只此一处。
+    /// 预设只是**默认值的来源**：同一格写了显式键（mpkgReduction / mpkgEtc2）就以显式键为准，
+    /// 否则"2× 档但我不想要 ETC2"这种组合就表达不出来了。
+    /// </summary>
+    public static class MpkgPresets
+    {
+        /// <summary>档位名 → (除数, ETC2)。大小写不敏感，界面里的乘号 '×' 也当 'x' 收。</summary>
+        public static bool TryResolve(string name, out int reduction, out bool etc2)
+        {
+            reduction = 1;
+            etc2 = false;
+            switch ((name ?? "").Trim().Replace('×', 'x').ToLowerInvariant())
+            {
+                case "1x": reduction = 1; etc2 = false; return true;   // 原始档：逐字节对齐真机包的形态
+                case "2x": reduction = 2; etc2 = true; return true;
+                case "4x": reduction = 4; etc2 = true; return true;
+                default: return false;
+            }
+        }
+
+        /// <summary>非法名抛 ArgumentException —— 清单写错了，不许当成"没填"静默按 1× 跑。</summary>
+        public static void Require(string name, out int reduction, out bool etc2, string key, string who = "")
+        {
+            if (TryResolve(name, out reduction, out etc2)) return;
+            throw new ArgumentException($"{key} 只认 1x/2x/4x（WE 的 原始/2×/4× 三档），给的是 '{name}'{who}");
+        }
+    }
+
+    /// <summary>
+    /// wallpapers[].options 的稀疏模型:一律可空,"没写"和"写了 false/1"必须分得开,
+    /// 所以不复用 BatchOptionsModel(那边在解析期就用 ?? 折成默认值了)。
+    /// 键名与全局 options 完全一致,只有 mode:mpkg 那几个。
+    /// </summary>
+    public class BatchWallpaperOptions
+    {
+        /// <summary>档位预设(1x/2x/4x)，展开成 mpkgReduction + mpkgEtc2 的默认值；写了那两个键的以键为准。</summary>
+        public string Preset { get; set; }
+        public string MpkgMagic { get; set; }
+        public bool? KeepAudio { get; set; }
+        public bool? NoLz4 { get; set; }
+        public int? MpkgReduction { get; set; }
+        public bool? MpkgEtc2 { get; set; }
+        public bool? MpkgNoShaderCompat { get; set; }
+        public bool? MpkgNoDematerialize { get; set; }
+        public bool? MpkgShrinkDx { get; set; }
     }
 
     /// <summary>manifest 全局提取选项(映射到 ExtractOptions 的过滤/输出开关)。</summary>
@@ -331,6 +484,12 @@ namespace RePKG_Re.Command
 
         // ---------- 以下仅 mode = "mpkg" 生效 ----------
 
+        /// <summary>
+        /// 档位预设(1x/2x/4x)。解析期就展开进 MpkgReduction/MpkgEtc2 的缺省值,
+        /// 同一份 options 里写了那两个键的以键为准 —— 预设管默认,显式键管覆盖。
+        /// </summary>
+        public string Preset { get; set; }
+
         /// <summary>输出包魔数;留空 = PKGM0019(真机也接受 PKGM0016,WE 自己两种都发)</summary>
         public string MpkgMagic { get; set; }
 
@@ -348,6 +507,14 @@ namespace RePKG_Re.Command
 
         /// <summary>true = 关掉着色器兼容改写(整数字面量不补 ".0")。默认开:不改写时手机编译失败、材质回退成基础贴图,画面就是一块白</summary>
         public bool MpkgNoShaderCompat { get; set; }
+
+        /// <summary>true = 所有 .tex 逐字节照搬,不物化成 RGBA8/ETC2。出"只改容器、像素不动"的对照包用。
+        /// 与逆向的 noDematerialize 同名同义,带 mpkg 前缀只是因为它读自 mode:mpkg 那一组。</summary>
+        public bool MpkgNoDematerialize { get; set; }
+
+        /// <summary>true = DXT 块格式也解码重缩(输出仍是 RGBA8)。默认只有同时开 mpkgEtc2 才走这条路,
+        /// 因为那条形路的字节真机验过;不开的话 DXT 密集的包无论缩几倍都一字节不动。</summary>
+        public bool MpkgShrinkDx { get; set; }
 
         // ---------- 以下仅 mode = "pkg"(mpkg→pc 逆向)生效 ----------
 

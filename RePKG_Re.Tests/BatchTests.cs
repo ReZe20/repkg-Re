@@ -239,11 +239,14 @@ namespace RePKG_Re.Tests
     ""onlyTexImages"": true,
     ""filterEffectImages"": 85,
     ""mpkgMagic"": ""PKGM0016"",
+    ""preset"": ""4x"",
     ""keepAudio"": true,
     ""noLz4"": true,
     ""mpkgReduction"": 2,
     ""mpkgEtc2"": true,
     ""mpkgNoShaderCompat"": true,
+    ""mpkgNoDematerialize"": true,
+    ""mpkgShrinkDx"": true,
     ""pkgMagic"": ""PKGV0023"",
     ""noDematerialize"": true,
     ""keepReductionKey"": true
@@ -275,9 +278,13 @@ namespace RePKG_Re.Tests
             Assert.That(mobile.Magic, Is.EqualTo("PKGM0016"));
             Assert.That(mobile.DropAudio, Is.False);
             Assert.That(mobile.UseLz4, Is.False);
-            Assert.That(mobile.Reduction, Is.EqualTo(2));
+            Assert.That(mobile.Reduction, Is.EqualTo(2));      // 同时写了 preset:4x —— 显式键赢
             Assert.That(mobile.EncodeEtc2, Is.True);
             Assert.That(mobile.ShaderCompat, Is.False);   // mpkgNoShaderCompat: true → 关
+            // 正向的关物化开关与逆向的 noDematerialize 同义不同键(两套键读自同一个 options 块),
+            // 前缀必须留在这条断言里:写成 noDematerialize 会被读成逆向那条,mode:mpkg 下静悄悄不生效。
+            Assert.That(mobile.Dematerialize, Is.False);  // mpkgNoDematerialize: true → 关
+            Assert.That(mobile.ShrinkDx, Is.True);
 
             // 编码只在缩过之后才有意义:÷1 又开编码是配错了,要报出来而不是静默发 fmt0
             manifest.Options.MpkgReduction = 1;
@@ -300,7 +307,8 @@ namespace RePKG_Re.Tests
             Assert.That(o.MinEntrySize, Is.Zero);
         }
 
-        /// <summary>兼容改写必须由 manifest 默认开着：漏配键的后果是一块白，不是包变大。</summary>
+        /// <summary>一个 mpkg 键都不写时的默认面必须是"真机验过的那版行为"：
+        /// 兼容改写开着（漏配的后果是一块白，不是包变大），物化开着、DXT 不动手。</summary>
         [Test]
         public void MpkgNoShaderCompat_Absent_ShaderCompat_StaysOn()
         {
@@ -315,6 +323,258 @@ namespace RePKG_Re.Tests
             Assert.That(mobile.Reduction, Is.EqualTo(1));
             Assert.That(mobile.EncodeEtc2, Is.False);
             Assert.That(mobile.DropAudio, Is.True);
+            // 这两条是"产物与真机验过的那版逐字节相同"的默认面:新键一旦默认改成动手的那边,
+            // 没写任何选项的调用方(WE Tool 的默认档)就会开始拿到不一样的字节。
+            Assert.That(mobile.Dematerialize, Is.True);
+            Assert.That(mobile.ShrinkDx, Is.False);
+        }
+
+        /// <summary>
+        /// wallpapers[].options 的覆盖语义:写了才覆盖、没写逐键回落全局、整段缺省等于没有条目级这回事。
+        /// 逐键而不是整段,是因为前端只想改一张壁纸的档位时不该被迫重抄其余五个键。
+        /// </summary>
+        [Test]
+        public void Manifest_PerWallpaperOptions_OverrideGlobalAndFallBack()
+        {
+            var path = Path.Combine(_tempDir, "peritem.json");
+            File.WriteAllText(path, @"{
+  ""mode"": ""mpkg"",
+  ""wallpapers"": [
+    { ""id"": ""A"", ""input"": ""C:/a"", ""output"": ""C:/out"" },
+    { ""id"": ""B"", ""input"": ""C:/b"", ""output"": ""C:/out"",
+      ""options"": { ""mpkgReduction"": 4, ""mpkgEtc2"": false, ""mpkgShrinkDx"": false, ""keepAudio"": true, ""mpkgMagic"": ""PKGM0016"" } },
+    { ""id"": ""C"", ""input"": ""C:/c"", ""output"": ""C:/out"",
+      ""options"": { ""mpkgNoShaderCompat"": true, ""mpkgNoDematerialize"": true } }
+  ],
+  ""options"": { ""overwrite"": true, ""mpkgReduction"": 2, ""mpkgEtc2"": true, ""mpkgShrinkDx"": true, ""mpkgMagic"": ""PKGM0019"" }
+}");
+
+            var manifest = BatchManifest.Load(path);
+
+            var a = manifest.ToMobileOptions(manifest.Wallpapers[0]);
+            Assert.That(a.Reduction, Is.EqualTo(2));
+            Assert.That(a.EncodeEtc2, Is.True);
+            Assert.That(a.Magic, Is.EqualTo("PKGM0019"));
+            Assert.That(a.DropAudio, Is.True);        // 全局 keepAudio 缺省 false → 丢音频
+            Assert.That(a.ShaderCompat, Is.True);
+            Assert.That(a.Dematerialize, Is.True);    // 全局没写那条 → 照常物化
+            Assert.That(a.ShrinkDx, Is.True);         // 全局写了 → 没覆盖的条目跟着
+
+            var b = manifest.ToMobileOptions(manifest.Wallpapers[1]);
+            Assert.That(b.Reduction, Is.EqualTo(4));   // 写了的覆盖
+            Assert.That(b.EncodeEtc2, Is.False);
+            Assert.That(b.ShrinkDx, Is.False);         // 全局开着,这条按住不动:于是 DXT 又回到逐字节照搬
+            Assert.That(b.Magic, Is.EqualTo("PKGM0016"));
+            Assert.That(b.DropAudio, Is.False);        // keepAudio:true → 留音频
+            Assert.That(b.UseLz4, Is.True);            // 没写的仍取全局
+
+            var c = manifest.ToMobileOptions(manifest.Wallpapers[2]);
+            Assert.That(c.ShaderCompat, Is.False);     // 只写一个键
+            Assert.That(c.Reduction, Is.EqualTo(2));   // 其余照旧
+            Assert.That(c.Dematerialize, Is.False);    // 条目级关物化
+            Assert.That(c.ShrinkDx, Is.True);          // 同一条里没写的键仍回落全局
+        }
+
+        /// <summary>
+        /// 条目级能凑出全局看不见的非法组合:全局编码关着、某行自己开编码但解析后的除数是 1。
+        /// 走的是解析器而不是 Load —— Load 里那条校验会 Environment.Exit(1),进程内测不了。
+        /// </summary>
+        [Test]
+        public void Manifest_PerWallpaperOptions_InvalidCombo_ThrowsNamingTheWallpaper()
+        {
+            var manifest = new BatchManifest
+            {
+                Mode = "mpkg",
+                Wallpapers =
+                [
+                    new BatchWallpaper
+                    {
+                        Id = "BAD", Input = "C:/a", Output = "C:/out",
+                        Options = new BatchWallpaperOptions { MpkgReduction = 1, MpkgEtc2 = true }
+                    }
+                ],
+                Options = new BatchOptionsModel { MpkgReduction = 2, MpkgEtc2 = false }
+            };
+
+            var ex = Assert.Throws<ArgumentException>(() => manifest.ToMobileOptions(manifest.Wallpapers[0]));
+            Assert.That(ex!.Message, Does.Contain("BAD"));        // 必须点出是哪条壁纸,否则前端无从定位
+            Assert.That(manifest.ToMobileOptions().EncodeEtc2, Is.False); // 全局口径本身仍然合法
+        }
+
+        /// <summary>
+        /// 三档预设的等价性闸门:preset 展开出来的那一格必须与手写显式键逐字段相同。
+        /// 这条之所以是硬闸门 —— "÷1 发 RGBA8、2× 起发 fmt5"替掉的是前端各自维护的那份派生,
+        /// 表一旦和当年的派生分叉,所有真机验过的产物形态一起作废。
+        /// </summary>
+        [Test]
+        [TestCase("1x", 1, false)]
+        [TestCase("2x", 2, true)]
+        [TestCase("4x", 4, true)]
+        [TestCase("2X", 2, true)]   // 大小写不敏感
+        [TestCase("4×", 4, true)]   // 界面里的乘号原样贴进清单也得认
+        public void Manifest_MpkgPreset_ExpandsToTheExplicitPair(string preset, int reduction, bool etc2)
+        {
+            var byPreset = BatchManifest.Load(WriteMpkgOptions("p_" + preset.Replace('×', 'x') + ".json",
+                "{ \"preset\": \"" + preset + "\" }")).ToMobileOptions();
+            var byKeys = BatchManifest.Load(WriteMpkgOptions("k_" + preset.Replace('×', 'x') + ".json",
+                "{ \"mpkgReduction\": " + reduction + ", \"mpkgEtc2\": " + (etc2 ? "true" : "false") + " }")).ToMobileOptions();
+
+            Assert.That(byPreset.Reduction, Is.EqualTo(reduction), preset + " 的除数");
+            Assert.That(byPreset.EncodeEtc2, Is.EqualTo(etc2), preset + " 的 ETC2");
+            Assert.That(byPreset.Reduction, Is.EqualTo(byKeys.Reduction));
+            Assert.That(byPreset.EncodeEtc2, Is.EqualTo(byKeys.EncodeEtc2));
+        }
+
+        /// <summary>预设只填"没写的格子",显式键永远压它 —— 否则自定义模式没法表达"2× 档但不要 ETC2"。</summary>
+        [Test]
+        public void Manifest_MpkgPreset_ExplicitKeysWin()
+        {
+            var shrunkOnly = BatchManifest.Load(WriteMpkgOptions("preset_plus_divisor.json",
+                "{ \"preset\": \"4x\", \"mpkgReduction\": 2 }")).ToMobileOptions();
+            Assert.That(shrunkOnly.Reduction, Is.EqualTo(2), "写了除数就以它为准,预设只补 ETC2 那格");
+            Assert.That(shrunkOnly.EncodeEtc2, Is.True);
+
+            // "缩而不编":UI 摆不出这个组合,手搓清单要能做(它是"÷2 但仍发 RGBA8"的对照包)
+            var reducedNoCodec = BatchManifest.Load(WriteMpkgOptions("preset_plus_etc2.json",
+                "{ \"preset\": \"2x\", \"mpkgEtc2\": false }")).ToMobileOptions();
+            Assert.That(reducedNoCodec.Reduction, Is.EqualTo(2));
+            Assert.That(reducedNoCodec.EncodeEtc2, Is.False);
+        }
+
+        /// <summary>
+        /// 未知档位名不许当成"没填"退回 1× —— 那会把一整批包按原始尺寸发出去。
+        /// 测的是两个真实抛点(档位表本身、条目级 preset 的解析处),不能拿 Load 测:
+        /// 清单内容错误在 Load 内部就是"打印 + Environment.Exit(1)",进程内测不了(见类注释)。
+        /// </summary>
+        [Test]
+        public void Manifest_MpkgPreset_UnknownName_Throws()
+        {
+            Assert.Throws<ArgumentException>(() => MpkgPresets.Require("8x", out _, out _, "options.preset"));
+
+            var manifest = new BatchManifest
+            {
+                Mode = "mpkg",
+                Wallpapers =
+                [
+                    new BatchWallpaper
+                    {
+                        Id = "BAD", Input = "C:/a", Output = "C:/out",
+                        Options = new BatchWallpaperOptions { Preset = "8x" }
+                    }
+                ],
+                Options = new BatchOptionsModel()
+            };
+
+            var ex = Assert.Throws<ArgumentException>(() => manifest.ToMobileOptions(manifest.Wallpapers[0]));
+            Assert.That(ex!.Message, Does.Contain("8x"));
+            Assert.That(ex.Message, Does.Contain("1x/2x/4x"));
+            Assert.That(ex.Message, Does.Contain("BAD"));    // 条目级必须点出是哪条壁纸
+        }
+
+        /// <summary>条目级预设与全局预设、以及本条显式键的优先级。</summary>
+        [Test]
+        public void Manifest_PerWallpaperPreset_OverridesGlobal_AndYieldsToExplicitKeys()
+        {
+            var path = Path.Combine(_tempDir, "peritem-preset.json");
+            File.WriteAllText(path, @"{
+  ""mode"": ""mpkg"",
+  ""wallpapers"": [
+    { ""id"": ""A"", ""input"": ""C:/a"", ""output"": ""C:/out"" },
+    { ""id"": ""B"", ""input"": ""C:/b"", ""output"": ""C:/out"", ""options"": { ""preset"": ""4x"" } },
+    { ""id"": ""C"", ""input"": ""C:/c"", ""output"": ""C:/out"",
+      ""options"": { ""preset"": ""2x"", ""mpkgEtc2"": false } }
+  ],
+  ""options"": { ""preset"": ""1x"" }
+}");
+
+            var manifest = BatchManifest.Load(path);
+
+            var a = manifest.ToMobileOptions(manifest.Wallpapers[0]);
+            Assert.That(a.Reduction, Is.EqualTo(1));       // 全局 1x
+            Assert.That(a.EncodeEtc2, Is.False);
+
+            var b = manifest.ToMobileOptions(manifest.Wallpapers[1]);
+            Assert.That(b.Reduction, Is.EqualTo(4));       // 条目预设盖过全局预设
+            Assert.That(b.EncodeEtc2, Is.True);
+
+            var c = manifest.ToMobileOptions(manifest.Wallpapers[2]);
+            Assert.That(c.Reduction, Is.EqualTo(2));       // 条目预设
+            Assert.That(c.EncodeEtc2, Is.False);           // 条目显式键盖过条目预设
+        }
+
+        /// <summary>端到端:一批里两条各用不同 preset,产出的 scene.json 各写自己的除数,全局那档只兜底。</summary>
+        [Test]
+        public void Batch_Mpkg_PerWallpaperPreset_AppliesPerEntry()
+        {
+            var keep = Path.Combine(_tempDir, "wpKeep");
+            var quarter = Path.Combine(_tempDir, "wpQuarter");
+            Directory.CreateDirectory(keep);
+            Directory.CreateDirectory(quarter);
+            var scene = Encoding.UTF8.GetBytes("{\"general\":{\"version\":26}}");
+            WritePkg(Path.Combine(keep, "scene.pkg"), ("scene.json", scene));
+            WritePkg(Path.Combine(quarter, "scene.pkg"), ("scene.json", scene));
+
+            var output = Path.Combine(_tempDir, "oPreset");
+            var manifestPath = Path.Combine(_tempDir, "mpkg-preset.json");
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(new
+            {
+                mode = "mpkg",
+                threads = 1,
+                wallpapers = new object[]
+                {
+                    new { id = "1", input = keep, output, outputName = "keep", options = new { preset = "1x" } },
+                    new { id = "2", input = quarter, output, outputName = "quarter", options = new { preset = "4x" } }
+                },
+                options = new { overwrite = true, preset = "2x" }
+            }));
+
+            var events = RunBatchAndCapture(manifestPath);
+            Assert.That(events.Exists(e => e.Type == "error"), Is.False);
+
+            Assert.That(SceneText(Path.Combine(output, "keep.mpkg")), Does.Not.Contain("texturereduction"));
+            Assert.That(SceneText(Path.Combine(output, "quarter.mpkg")), Does.Contain("\"texturereduction\" : 4"));
+        }
+
+        /// <summary>写一份只有单条壁纸、options 段原样给定的 mpkg 清单。</summary>
+        private string WriteMpkgOptions(string name, string optionsJson)
+        {
+            var path = Path.Combine(_tempDir, name);
+            File.WriteAllText(path, @"{
+  ""mode"": ""mpkg"",
+  ""wallpapers"": [ { ""id"": ""A"", ""input"": ""C:/in"", ""output"": ""C:/out"" } ],
+  ""options"": " + optionsJson + @"
+}");
+            return path;
+        }
+
+        /// <summary>
+        /// mode:inspect 读的是同一套档位键，但不写文件，所以清单里没有 output 也算合法 ——
+        /// 逼调用方编一个用不到的目录，只会让人以为探测会往那里写东西。
+        /// </summary>
+        [Test]
+        public void Manifest_Inspect_NeedsNoOutput_AndSharesTheTierKeys()
+        {
+            var path = Path.Combine(_tempDir, "inspect.json");
+            File.WriteAllText(path, @"{
+  ""mode"": ""inspect"",
+  ""wallpapers"": [
+    { ""id"": ""A"", ""input"": ""C:/a.pkg"" },
+    { ""id"": ""B"", ""input"": ""C:/b.pkg"", ""options"": { ""preset"": ""4x"", ""mpkgEtc2"": false } }
+  ],
+  ""options"": { ""preset"": ""2x"" }
+}");
+
+            var manifest = BatchManifest.Load(path);
+            Assert.That(manifest.IsInspect, Is.True);
+
+            var a = manifest.ToMobileOptions(manifest.Wallpapers[0]);
+            Assert.That(a.Reduction, Is.EqualTo(2));
+            Assert.That(a.EncodeEtc2, Is.True);
+
+            // 条目预设填格、显式键压过预设：与 mode:mpkg 完全同一份优先级，探测读数才对得上转换产物
+            var b = manifest.ToMobileOptions(manifest.Wallpapers[1]);
+            Assert.That(b.Reduction, Is.EqualTo(4));
+            Assert.That(b.EncodeEtc2, Is.False);
         }
 
         /// <summary>表头那句「manifest 键按不区分大小写匹配」的守门用例。</summary>
@@ -480,6 +740,54 @@ namespace RePKG_Re.Tests
             Assert.That(events.Exists(e => e.Type == "error"), Is.False);
             Assert.That(ListFiles(outOne), Is.EquivalentTo(new[] { "2636878454.mpkg" }));
             Assert.That(ListFiles(outMany), Is.EquivalentTo(new[] { "A_B_C_scene.mpkg", "A_B_C_extra.mpkg" }));
+        }
+
+        /// <summary>
+        /// 一批里两张壁纸各用各的档:条目级 options 必须真的走到转换器,而不是只在清单里改了个数。
+        /// 这是前端只跑一批的前提 —— 否则它还得按档把队列切成多批。
+        /// </summary>
+        [Test]
+        public void Batch_Mpkg_PerWallpaperReduction_AppliesPerEntry()
+        {
+            var keep = Path.Combine(_tempDir, "wpKeep");
+            var quarter = Path.Combine(_tempDir, "wpQuarter");
+            Directory.CreateDirectory(keep);
+            Directory.CreateDirectory(quarter);
+            // general 块至少要有一个成员:空块时 SetTextureReduction 报"读不到成员"而不写键
+            var scene = Encoding.UTF8.GetBytes("{\"general\":{\"version\":26}}");
+            WritePkg(Path.Combine(keep, "scene.pkg"), ("scene.json", scene));
+            WritePkg(Path.Combine(quarter, "scene.pkg"), ("scene.json", scene));
+
+            var output = Path.Combine(_tempDir, "oPerItem");
+            var manifestPath = Path.Combine(_tempDir, "mpkg-peritem.json");
+            File.WriteAllText(manifestPath, JsonSerializer.Serialize(new
+            {
+                mode = "mpkg",
+                threads = 1,
+                wallpapers = new object[]
+                {
+                    new { id = "1", input = keep, output, outputName = "keep", options = new { mpkgReduction = 1 } },
+                    new { id = "2", input = quarter, output, outputName = "quarter", options = new { mpkgReduction = 4 } }
+                },
+                options = new { overwrite = true, mpkgReduction = 2 }
+            }));
+
+            var events = RunBatchAndCapture(manifestPath);
+            Assert.That(events.Exists(e => e.Type == "error"), Is.False);
+
+            // 除数 1 那条不写键;除数 4 那条写的是自己的 4,不是全局的 2
+            Assert.That(SceneText(Path.Combine(output, "keep.mpkg")), Does.Not.Contain("texturereduction"));
+            Assert.That(SceneText(Path.Combine(output, "quarter.mpkg")), Does.Contain("\"texturereduction\" : 4"));
+        }
+
+        /// <summary>读出产包里 scene.json 的文本(走 PackageReader,所以条目压没压都能读)。</summary>
+        private static string SceneText(string packagePath)
+        {
+            using var fs = File.OpenRead(packagePath);
+            using var br = new BinaryReader(fs, Encoding.UTF8, true);
+            var pkg = new PackageReader { ReadEntryBytes = true }.ReadFrom(br);
+            var entry = pkg.Entries.FirstOrDefault(e => e.FullPath == "scene.json");
+            return entry?.Bytes is null ? "" : Encoding.UTF8.GetString(entry.Bytes);
         }
 
         [Test]

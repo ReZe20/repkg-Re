@@ -278,17 +278,34 @@ namespace RePKG_Re.Tests
             Assert.That(mobile.Magic, Is.EqualTo("PKGM0016"));
             Assert.That(mobile.DropAudio, Is.False);
             Assert.That(mobile.UseLz4, Is.False);
-            Assert.That(mobile.Reduction, Is.EqualTo(2));      // 同时写了 preset:4x —— 显式键赢
-            Assert.That(mobile.EncodeEtc2, Is.True);
             Assert.That(mobile.ShaderCompat, Is.False);   // mpkgNoShaderCompat: true → 关
             // 正向的关物化开关与逆向的 noDematerialize 同义不同键(两套键读自同一个 options 块),
             // 前缀必须留在这条断言里:写成 noDematerialize 会被读成逆向那条,mode:mpkg 下静悄悄不生效。
             Assert.That(mobile.Dematerialize, Is.False);  // mpkgNoDematerialize: true → 关
+
+            // mpkgNoDematerialize 是那三格的父:它为真时档位/编码/缩DXT 在解析期就被规范化掉,
+            // 所以这里读到的是 1/false/false,而不是清单上写着的 2/true/true。
+            Assert.That(mobile.Reduction, Is.EqualTo(1), "照搬开着,档位必须被规范化成 1");
+            Assert.That(mobile.EncodeEtc2, Is.False, "照搬开着,没有可编码的对象");
+            Assert.That(mobile.ShrinkDx, Is.False, "照搬开着,没有可解码重缩的对象");
+
+            // 但映射本身还得验(这条用例的存在理由就是"README 写的每个键都得有人读"):
+            // 把父关掉,同一份清单里的三个子键要原样落到底层选项上。
+            // 显式 mpkgReduction:2 同时压过 preset:4x —— 显式键赢这条优先级也得留在这里验。
+            manifest.Options.MpkgNoDematerialize = false;
+            mobile = manifest.ToMobileOptions();
+            Assert.That(mobile.Reduction, Is.EqualTo(2));
+            Assert.That(mobile.EncodeEtc2, Is.True);
             Assert.That(mobile.ShrinkDx, Is.True);
 
             // 编码只在缩过之后才有意义:÷1 又开编码是配错了,要报出来而不是静默发 fmt0
             manifest.Options.MpkgReduction = 1;
             Assert.Throws<ArgumentException>(() => manifest.ToMobileOptions());
+
+            // 而同一份清单只要把照搬打开,那个非法组合就被父吞掉了 —— 不报错,按 1/false 走。
+            // (写这两条是为了钉住顺序:先吞子、后校验,所以"照搬 + ÷1 + fmt5"是合法清单。)
+            manifest.Options.MpkgNoDematerialize = true;
+            Assert.That(manifest.ToMobileOptions().EncodeEtc2, Is.False);
 
             // mode:pkg(逆向)那三个键同样钉住:两个取反键最容易被写反
             var pc = manifest.ToPcOptions();
@@ -370,9 +387,12 @@ namespace RePKG_Re.Tests
 
             var c = manifest.ToMobileOptions(manifest.Wallpapers[2]);
             Assert.That(c.ShaderCompat, Is.False);     // 只写一个键
-            Assert.That(c.Reduction, Is.EqualTo(2));   // 其余照旧
             Assert.That(c.Dematerialize, Is.False);    // 条目级关物化
-            Assert.That(c.ShrinkDx, Is.True);          // 同一条里没写的键仍回落全局
+            // 同一条把父开关打开了,所以全局那三格在这条上被规范化掉 —— 不是"回落全局",是"父吞子"。
+            // 留这几条断言是为了钉住:派生是按条目算的,A/B 两行不受影响(上面已验)。
+            Assert.That(c.Reduction, Is.EqualTo(1), "这条自己照搬,不能吃全局的 2×");
+            Assert.That(c.EncodeEtc2, Is.False);
+            Assert.That(c.ShrinkDx, Is.False);
         }
 
         /// <summary>

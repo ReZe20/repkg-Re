@@ -54,8 +54,10 @@ namespace RePKG_Re.Command
 
             if (manifest.IsMpkg)
             {
-                // 打包走独立执行器:输出是单个 mpkg 文件,条目必须按表序单遍写+回填,不能进全局条目队列。
-                // 壁纸级并发上限由 MpkgRunner 自己收(物化单条上限 250MB,不能按核数放大)。
+                // 打包走独立执行器:输出是单个 mpkg 文件,条目必须按表序写+回填,所以不能像 extract 那样
+                // 把"写"也交给全局条目队列 —— 但"算"可以:MpkgRunner 把条目产出铺到 threads 个 worker 上,
+                // 每个包一条提交线程按表序收。驻留由"窗口 + 大产物落盘"框住,不再靠"并发锁 2"。
+                // 逆向(mode:pkg)还是旧的壁纸级并发 2 —— 同一条形状,只是没改造它,不是另一套规则。
                 new MpkgRunner(w => manifest.ToMobileOptions(w), manifest.Wallpapers, threads,
                     manifest.Options?.Overwrite ?? false).Run();
                 Console.WriteLine("{\"type\":\"batch\",\"action\":\"done\"}");

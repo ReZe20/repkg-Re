@@ -105,6 +105,13 @@ namespace RePKG_Re.Application.Texture
         public bool ShrinkDx { get; set; }
 
         /// <summary>
+        /// <b>一条纹理内部</b>（多张源图 / 多级 mip）的解压并行度：0 = 按核数自适应（默认口径），1 = 一次只走一路。
+        /// 条目级并行排产时由 <see cref="MobilePackagePipeline"/> 压成 1 —— 并行度那一份预算已经被条目占掉了，
+        /// 内层再各开 8 路就是 N×8 的互相超订。它不进 manifest：这是内部吞吐旋钮，不是产物参数。
+        /// </summary>
+        public int Parallelism { get; set; }
+
+        /// <summary>
         /// 这一条目在当前的 reduction/etc2/shrinkDx 下会不会真缩。只看头部和容器头，不读载荷 ——
         /// 给只读探测用，和 <see cref="NeedsPixels"/> 走同一份判据：探测说"缩不动"而转换却缩了，
         /// 或者反过来，都是最难查的那类不一致。
@@ -293,6 +300,8 @@ namespace RePKG_Re.Application.Texture
 
         private ITex Read(byte[] texBytes, bool readPixels, int onlyImage = -1)
         {
+            // 唯一的收口处：整条读纹理链只有这里决定"要不要把解压分出去"，所以旋钮在这里落地一次就够。
+            TexDecodeParallelism.Override = Parallelism;
             using var reader = new BinaryReader(new MemoryStream(texBytes), Encoding.UTF8, true);
             return _texReader.ReadFrom(reader, readPixels, onlyImage);
         }

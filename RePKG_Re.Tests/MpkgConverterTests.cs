@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 using NUnit.Framework;
 using RePKG_Re.Application.Package;
 using RePKG_Re.Application.Texture;
@@ -888,6 +890,219 @@ namespace RePKG_Re.Tests
             var patched = SceneJsonPatcher.SetTextureReduction(Encoding.UTF8.GetBytes("{\"a\":1}"), 2, out var failure);
             Assert.IsNull(patched);
             Assert.IsNotNull(failure);
+        }
+
+        // ---------- 并行排产：产物必须与串行逐字节相同 ----------
+
+        /// <summary>
+        /// 噪声图：物化后的 RGBA8 <b>压不下去</b>。平滑渐变那种会被 LZ4 压到 1MB 以下，
+        /// 于是"大条目落盘"这条路根本没被碰到，用例却在绿 —— 这条是踩过一次才知道的。
+        /// </summary>
+        private static byte[] MakeNoisePng(int w, int h)
+        {
+            using var image = new Image<Rgba32>(w, h);
+            var s = (uint) (w * 73856093) ^ (uint) (h * 19349663) ^ 0x9e3779b9;
+            for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                image[x, y] = new Rgba32((byte) s, (byte) (s >> 8), (byte) (s >> 16), 255);
+            }
+
+            using var stream = new MemoryStream();
+            image.SaveAsPng(stream);
+            return stream.ToArray();
+        }
+
+        /// <summary>
+        /// 一张"条目够多、大家伙够大"的包：窗口、落盘、按序拼接三件事都得被跑到，
+        /// 否则"并行没改变字节"这条断言只是在验证没并行的那条路。
+        /// </summary>
+        private string WriteBusyPackage(string name, int bigCount, int smallCount)
+        {
+            var entries = new List<(string, byte[])>();
+
+            for (var i = 0; i < bigCount; i++)
+            {
+                // 800x600 物化后 RGBA8 = 1.92MB，且是噪声压不小 → 过 1MB 的落盘阈值
+                var w = 800 + i;
+                var h = 600 + i;
+                entries.Add(($"materials/big{i}.tex", MakePassthroughTex(MakeNoisePng(w, h), w, h)));
+            }
+
+            for (var i = 0; i < smallCount; i++)
+            {
+                var w = 9 + i % 5;
+                var h = 7 + i % 3;
+                entries.Add(($"materials/small{i}.tex", MakePassthroughTex(MakePng(w, h), w, h)));
+                // 每条都要被兼容改写补 .0，所以它们在产出阶段互不相干、顺序却必须保持
+                entries.Add(($"shaders/s{i}.frag", Encoding.UTF8.GetBytes($"float v{i} = {i + 2};\n")));
+            }
+
+            entries.Add(("scene.json", Encoding.UTF8.GetBytes(WeStyleSceneJson)));
+            entries.Add(("sounds/a.mp3", new byte[] {1, 2, 3, 4}));
+            return WritePackage(name, entries.ToArray());
+        }
+
+        private string WriteLoose(string name, string text)
+        {
+            Directory.CreateDirectory(_dir);
+            var file = Path.Combine(_dir, name);
+            File.WriteAllText(file, text);
+            return file;
+        }
+
+        private static string[] SpillDirs() => Directory.GetDirectories(Path.GetTempPath(), "repkg-spill-*");
+
+        /// <summary>
+        /// 每次给一份<b>新的</b> options（loose 那两个字段是 runner 按包现填的，共用一份会让两个包抢同一个文件），
+        /// 串行与并行两边都从这里取 —— 否则比的根本是两种输入（第一次跑就因为漏了 loose 差出 80 字节）。
+        /// </summary>
+        private MobilePackageOptions OptionsWithLoose(int reduction, bool etc2 = false, string tag = "d")
+        {
+            return new MobilePackageOptions
+            {
+                Reduction = reduction,
+                EncodeEtc2 = etc2,
+                ProjectJsonPath = WriteLoose($"project-{tag}.json", "{\"preview\":\"preview.gif\"}"),
+                PreviewPath = WriteLoose($"preview-{tag}.gif", "gifbytes")
+            };
+        }
+
+        [Test]
+        public void TestPipeline_ParallelOutput_IsByteIdenticalToSerial()
+        {
+            var src = WriteBusyPackage("scene.pkg", 3, 6);
+            var converter = new MobilePackageConverter();
+            var serial = Path.Combine(_dir, "serial.mpkg");
+            var parallel = Path.Combine(_dir, "parallel.mpkg");
+
+            converter.Convert(src, serial, OptionsWithLoose(1));
+
+            var spillBefore = SpillDirs();
+            var ended = false;
+            int spilled;
+            using (var pipe = new MobilePackagePipeline(4, 2))
+            {
+                pipe.Add(converter.BuildPlan(src, OptionsWithLoose(1), parallel), null,
+                    p => { ended = true; });
+                pipe.Run();
+                spilled = pipe.SpilledEntries;
+            }
+
+            Assert.IsTrue(ended, "回调没跑到，说明那条包的提交线程根本没结束");
+
+            var a = File.ReadAllBytes(serial);
+            var b = File.ReadAllBytes(parallel);
+            Assert.AreEqual(a.LongLength, b.LongLength, "并行产物长度不同：先比条目表再比数据区，看是哪一段偏了");
+            CollectionAssert.AreEqual(a, b, "并行改变了产物字节 —— 产出阶段串了状态，或拼接不再按表序");
+
+            // 字节比对在前：落盘门没跨过只是"这条用例没测到那条路"，不该把"并行改了字节"这种结论挡住
+            Assert.Greater(spilled, 0, "3 条 1.9MB 的 RGBA8 必须有过落盘，否则这条用例压根没碰到临时仓");
+
+            // 临时仓必须自己收干净：漏一次就是一包几十 MB 留在 %TEMP%，而且没人会去看
+            CollectionAssert.AreEquivalent(spillBefore, SpillDirs(), "并行结束后 %TEMP% 里留下了临时仓目录");
+        }
+
+        [Test]
+        public void TestPipeline_TwoPackagesWithDifferentOptions_DoNotCrossTalk()
+        {
+            // 条目级覆盖（每张壁纸一档）就是靠"每包一份 options"成立的；两包并行时最怕是彼此的档位互串
+            var src = WriteBusyPackage("scene.pkg", 1, 4);
+            var converter = new MobilePackageConverter();
+
+            var s1 = Path.Combine(_dir, "s1.mpkg");
+            var s2 = Path.Combine(_dir, "s2.mpkg");
+            var p1 = Path.Combine(_dir, "p1.mpkg");
+            var p2 = Path.Combine(_dir, "p2.mpkg");
+
+            converter.Convert(src, s1, OptionsWithLoose(1, tag: "a"));
+            converter.Convert(src, s2, OptionsWithLoose(2, true, tag: "b"));
+
+            using (var pipe = new MobilePackagePipeline(4, 2))
+            {
+                // 故意让"重的"那包先登记：轮转投料下两包同时在产，互串会以"p1 长得像 p2"暴露
+                pipe.Add(converter.BuildPlan(src, OptionsWithLoose(2, true, tag: "b"), p2), null, null);
+                pipe.Add(converter.BuildPlan(src, OptionsWithLoose(1, tag: "a"), p1), null, null);
+                pipe.Run();
+            }
+
+            CollectionAssert.AreEqual(File.ReadAllBytes(s1), File.ReadAllBytes(p1), "÷1 那包被另一包的档位影响了");
+            CollectionAssert.AreEqual(File.ReadAllBytes(s2), File.ReadAllBytes(p2), "÷2+fmt5 那包被另一包的档位影响了");
+            Assert.AreNotEqual(new FileInfo(s1).Length, new FileInfo(s2).Length,
+                "两包的产物一模一样，说明档位根本没生效（这条断言是给上面两条兜底的）");
+        }
+
+        [Test]
+        public void TestPipeline_MergesAsEntriesLand_NotAfterEverythingIsProduced()
+        {
+            // 这条盯的就是"什么时候合并"：偏移是前缀和，所以提交必须一格一格走。
+            // 攒到全部产出再拼的写法同样能出正确字节，但它要把整包字节留在窗口/临时盘上，
+            // 而且第一条要等最后一条 —— 进度条会一直停在 0。
+            var src = WriteBusyPackage("scene.pkg", 1, 10);
+            var converter = new MobilePackageConverter();
+            var target = Path.Combine(_dir, "streaming.mpkg");
+            var plan = converter.BuildPlan(src, OptionsWithLoose(1), target);
+
+            // 读累计字节数而不是文件长度：FileStream 有内部写缓冲，磁盘上的长度会滞后一两条，
+            // 那会让这条用例偶尔假红，而它要证的本来就不是"OS 刷盘时机"。
+            var committed = new List<long>();
+            using (var pipe = new MobilePackagePipeline(2, 1))
+            {
+                pipe.Add(plan, (index, ofPackage, name) => committed.Add(plan.Report.OutputBytes), null);
+                pipe.Run();
+            }
+
+            Assert.Greater(committed.Count, 4, "回调太少，下面那组断言没有区分力");
+            Assert.AreEqual(plan.Count, committed.Count, "每条都该有一次提交回调");
+
+            for (var i = 1; i < committed.Count; i++)
+                Assert.Greater(committed[i], committed[i - 1],
+                    $"写第 {i} 条时累计字节没涨 —— 提交没有在逐条推进，是在攒着一次拼");
+
+            // 回调在写这条<b>之前</b>发：第 0 次时累计字节还是 0，最后一次时它自己那一格还没进账。
+            // 这两条钉的是"进度事件与字节的先后"，前端那条进度条靠它才不会倒退或提前。
+            Assert.AreEqual(0, committed[0], "第一条的回调时机应该在它写出之前");
+            Assert.Less(committed[committed.Count - 1], plan.Report.OutputBytes,
+                "最后一次回调已经看到了全部字节，说明回调发晚了");
+        }
+
+        [Test]
+        public void TestPipeline_OnePackageFailing_LeavesTheOtherOneIntact()
+        {
+            var src = WriteBusyPackage("scene.pkg", 1, 4);
+            var good = WriteBusyPackage("good.pkg", 1, 3);
+            var converter = new MobilePackageConverter();
+
+            var serialGood = Path.Combine(_dir, "good_serial.mpkg");
+            converter.Convert(good, serialGood, OptionsWithLoose(1, tag: "good"));
+
+            // 造一条"产出阶段必抛"的包：计划建好之后把它要内嵌的 loose 文件删掉
+            var doomedTarget = Path.Combine(_dir, "doomed.mpkg");
+            var doomed = converter.BuildPlan(src, OptionsWithLoose(1, tag: "doomed"), doomedTarget);
+            File.Delete(doomed.Options.ProjectJsonPath);
+            File.Delete(doomed.Options.PreviewPath);
+
+            var goodTarget = Path.Combine(_dir, "good_parallel.mpkg");
+            var goodPlan = converter.BuildPlan(good, OptionsWithLoose(1, tag: "good"), goodTarget);
+
+            var spillBefore = SpillDirs();
+            using (var pipe = new MobilePackagePipeline(3, 2))
+            {
+                pipe.Add(doomed, null, null);
+                pipe.Add(goodPlan, null, null);
+                pipe.Run();
+            }
+
+            Assert.IsNotNull(doomed.Failure, "loose 文件已被删掉，产出阶段必须抛出来并记在这个包上");
+            Assert.IsNull(goodPlan.Failure, "一个包失败不该牵连同批的另一个包");
+            Assert.AreEqual(goodPlan.Count, goodPlan.Report.Entries, "好包必须整包写满，一格都不能缺");
+            CollectionAssert.AreEqual(File.ReadAllBytes(serialGood), File.ReadAllBytes(goodTarget),
+                "好包的产物必须与它单独跑时逐字节相同");
+
+            CollectionAssert.AreEquivalent(spillBefore, SpillDirs(), "失败包的临时条目没被清掉");
         }
 
         private static int Count(string haystack, string needle)

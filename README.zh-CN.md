@@ -139,7 +139,7 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 | `options.mpkgReduction` | int | 1 | 仅 `mode: mpkg` - 纹理缩小倍数（`>= 1` 皆可；上面那三档用的是 1/2/4）。只有被物化的条目会被缩放；该倍数同时以 `"texturereduction"` 记录进场景文件 | - |
 | `options.mpkgEtc2` | bool | false | 仅 `mode: mpkg` - 把缩小后的像素输出为 ETC2 RGBA8（`format=5`，1 字节/像素）而不是 RGBA8。要求 `mpkgReduction > 1`；尚未在手机真机验证，故默认关闭 | - |
 | `options.mpkgNoShaderCompat` | bool | false | 仅 `mode: mpkg` - `true` 关闭 GLSL → GLSL ES 重写（给浮点上下文中的整数字面量追加 `.0`）。移动端 GLSL 没有隐式 int→float，编译失败的着色器会让材质回退到底图，图层显示为纯白矩形。每次重写按包报告为 `着色器改写 N条/M处` | - |
-| `options.mpkgNoDematerialize` | bool | false | 仅 `mode: mpkg` - `true` 让所有 `.tex` 逐字节照搬、不物化成 RGBA8/ETC2，也就是"容器换掉、像素一字节不动"的对照包。着色器改写照做（那不是像素活）；开着 `mpkgReduction > 1` 时会发一条 error 级警告，并且不把 `texturereduction` 写进场景文件，因为什么都没缩。逆向那条路同一个意思不带前缀（`noDematerialize`，仅 `mode: pkg`）—— 两组键读自同一个 `options` 块，写错前缀不会被任何一种模式读到 | - |
+| `options.mpkgNoDematerialize` | bool | false | 仅 `mode: mpkg` - `true` 让所有 `.tex` 逐字节照搬、不物化成 RGBA8/ETC2，也就是"容器换掉、像素一字节不动"的对照包。**它是 `mpkgReduction` / `mpkgEtc2` / `mpkgShrinkDx` 三格的父开关**：它为真时那三格在清单解析阶段就被一并规范化成 `1` / `false` / `false` —— 既不报错也不生效，摘要读数与 `mode: inspect` 报的都是规范化后的值，所以清单里摆不出"档位 4× + fmt5 + 照搬"那种四个开关全开、一个都不动的组合。`noLz4` 同样没有作用对象（LZ4 只作用于物化出来的 mip），但故意不改它的值：它不改产物字节也不进读数，改掉只会让清单和读数互相打脸。着色器改写照做（那不是像素活）。绕过清单、直接 `new MobilePackageOptions` 的调用方没有这层派生，那里仍由转换器发一条 error 级警告兜底，并且不写 `texturereduction`。逆向那条路同一个意思不带前缀（`noDematerialize`，仅 `mode: pkg`）—— 两组键读自同一个 `options` 块，写错前缀不会被任何一种模式读到 | - |
 | `options.mpkgShrinkDx` | bool | false | 仅 `mode: mpkg` - DXT1/3/5 载荷也解码重缩，而不是逐字节照搬。默认关：那条解码路以前只在同时开 `mpkgEtc2` 时走过（配出来才是真机验过的字节），而 DXT 每像素花的字节比 RGBA8 少 —— DXT1 的壁纸开着 `mpkgReduction: 2`、关着 ETC2 走这条，包会比进去时更大。`mpkgReduction` 为 1 时它不动手也不报错（全局写一次 + 个别条目回 1× 是清单的正常写法）。按包报告为 `DXT重缩 N` | - |
 | `options.pkgMagic` | string | `PKGV0018` | `mode: pkg` 与 `mode: pack` - 写入输出 PC 包的 magic | `--magic`（pack） |
 | `options.noDematerialize` | bool | false | 仅 `mode: pkg` - `true` 时原样复制已物化的 RGBA8 纹理，而不是重新编码回 PNG 直通 blob（调试反向路径时有用） | - |
@@ -290,7 +290,9 @@ Wallpaper Engine *手机端导出*的包（区别于本工具产出的包）通�
 
 它不读像素、不写文件，所以 `wallpapers[].output` 可以不给。它认识的档位键就是 `mode: mpkg` 那一套 ——
 `preset` / `mpkgReduction` / `mpkgEtc2` / `mpkgShrinkDx` / `mpkgNoDematerialize`，条目级与全局同一份优先级：
-一个跟转换器对档位的理解不一致的探针，比没有探针更糟。每个包一条事件，加上照旧的 `wallpaper` start/done 与 `error`：
+一个跟转换器对档位的理解不一致的探针，比没有探针更糟。同一条派生也在这里生效 —— `mpkgNoDematerialize` 为真的那一行，
+事件里报出的 `reduction`/`etc2`/`shrinkDx` 就是规范化后的 `1`/`false`/`false`（照搬开着却报"4× 会缩 7 条"的探针才是真骗人）。
+每个包一条事件，加上照旧的 `wallpaper` start/done 与 `error`：
 
 ```
 {"id":"1","type":"inspect","file":".../scene.pkg","entries":12,"bytes":1355687,"tex":1,"texBytes":1343778,

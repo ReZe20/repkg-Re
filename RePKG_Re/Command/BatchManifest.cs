@@ -300,27 +300,44 @@ namespace RePKG_Re.Command
             var reduction = explicitReduction ?? o.MpkgReduction;
             var etc2 = explicitEtc2 ?? o.MpkgEtc2;
 
+            // 非法输入先报错，且用的是"合并后的原始值"：这条与下面的派生顺序不能换 ——
+            // 要是先把照搬那格折进来，mpkgReduction:0 这种写错的值就会被照搬一起吞掉，静默按 1 跑完一整批。
+            if (reduction < 1)
+                throw new ArgumentException(
+                    $"mpkgReduction 必须 >= 1（1=不缩，WE 的下拉只有 1/2/4），当前 {reduction}{who}");
+
+            // ---------- 像素模式的父/子派生 ----------
+            // mpkgNoDematerialize 不是一格并列开关，它是 mpkgReduction / mpkgEtc2 / mpkgShrinkDx 的<b>父</b>：
+            // 它为真时所有 .tex 逐字节照搬，那三个参数一个都没有作用对象。以前它们并列存在，于是清单能写出
+            // "档位 4× + fmt5 + 照搬"这种四个开关全开、一个都不生效的组合 —— 现在在这里一次性规范化，
+            // 所以读数值就是产物真发生的事，不需要再靠"你自己理解它无效"。
+            // noLz4 也在同一个作用域里（LZ4 只作用于物化出来的 mip），但它不改任何产物字节、也不进任何读数，
+            // 所以故意不动它的值 —— 把清单里的 true 悄悄改成 false，只会让清单和读数互相打脸。
+            if (noDematerialize)
+            {
+                reduction = 1;
+                etc2 = false;
+                shrinkDx = false;
+            }
+
             return new MobilePackageOptions
             {
                 Magic = string.IsNullOrWhiteSpace(magic) ? "PKGM0019" : magic,
                 DropAudio = !keepAudio,
                 UseLz4 = !noLz4,
-                Reduction = reduction switch
-                {
-                    < 1 => throw new ArgumentException($"mpkgReduction 必须 >= 1（1=不缩，WE 的下拉只有 1/2/4），当前 {reduction}{who}"),
-                    _ => reduction
-                },
-                // 编码只在缩过之后才有意义（÷1 那条路是逐字节验过的形态），不缩又开编码一定是配错了
+                Reduction = reduction,
+                // 编码只在缩过之后才有意义（÷1 那条路是逐字节验过的形态）。这条判在派生<b>之后</b>：
+                // 照搬开着时 etc2 已经被父吞成 false，所以"照搬 + 原始档 + fmt5"不再是非法清单。
                 EncodeEtc2 = !etc2
                     ? false
                     : reduction > 1
                         ? true
                         : throw new ArgumentException($"mpkgEtc2 只在 mpkgReduction > 1 时有意义（÷1 发的是已验过的 RGBA8 形态）{who}"),
                 ShaderCompat = !noShaderCompat,
-                // 这两条一律不做"必须 mpkgReduction > 1"的交叉校验，和上面的 mpkgEtc2 不同：
-                // 它们不会与档位组成非法产物（关物化只是不出缩过的像素，ShrinkDx 在下层有 Reduction > 1 前提），
+                // ShrinkDx 不做"必须 mpkgReduction > 1"的交叉校验：它在下层本就有 Reduction > 1 前提，
                 // 而清单里全局写一次、个别条目改档位的写法很常见，报错会让整批退不出去。
-                // "关了物化又要求缩小"那种自相矛盾的清单由转换器出 error 级警告兜底。
+                // 另外库层（直接 new MobilePackageOptions 的调用方）仍留着转换器那条 error 级警告兜底，
+                // 因为派生只发生在清单这一层。
                 Dematerialize = !noDematerialize,
                 ShrinkDx = shrinkDx
             };
@@ -509,7 +526,11 @@ namespace RePKG_Re.Command
         public bool MpkgNoShaderCompat { get; set; }
 
         /// <summary>true = 所有 .tex 逐字节照搬,不物化成 RGBA8/ETC2。出"只改容器、像素不动"的对照包用。
-        /// 与逆向的 noDematerialize 同名同义,带 mpkg 前缀只是因为它读自 mode:mpkg 那一组。</summary>
+        /// 与逆向的 noDematerialize 同名同义,带 mpkg 前缀只是因为它读自 mode:mpkg 那一组。
+        /// <b>它是 mpkgReduction / mpkgEtc2 / mpkgShrinkDx 的父开关</b>:它为真时那三个键被一并规范化成
+        /// 1 / false / false(照搬之后没有可缩可编的对象),所以它们既不报错也不生效,而读数与探测报的就是
+        /// 规范化后的值。noLz4 同样无事可做,但故意不改它的值(理由见 ToMobileOptions 那段)。
+        /// 只有着色器兼容改写不受它影响 —— 那不是像素活。</summary>
         public bool MpkgNoDematerialize { get; set; }
 
         /// <summary>true = DXT 块格式也解码重缩(输出仍是 RGBA8)。默认只有同时开 mpkgEtc2 才走这条路,

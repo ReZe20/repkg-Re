@@ -116,10 +116,7 @@ namespace RePKG_Re.Application.Texture
                 // 避免与 batch 的多个 worker 叠加后过度超订。
                 // 内存代价实测很小(8K 图集:峰值 +125MB):解压结果本来就要全部驻留,
                 // 提高并行只多出同时在场的临时缓冲。
-                var decompressParallelism = Environment.ProcessorCount / 2;
-                if (decompressParallelism < 2) decompressParallelism = 2;
-                if (decompressParallelism > 8) decompressParallelism = 8;
-                if (decompressParallelism > mipmaps.Count) decompressParallelism = mipmaps.Count;
+                var decompressParallelism = TexDecodeParallelism.Resolve(mipmaps.Count);
 
                 using (var semaphore = new SemaphoreSlim(decompressParallelism))
                 {
@@ -148,6 +145,45 @@ namespace RePKG_Re.Application.Texture
             }
 
             return container;
+        }
+    }
+
+    /// <summary>
+    /// 一条纹理<b>内部</b>（多张源图 / 多级 mip）解压的并行度旋钮。
+    ///
+    /// 为什么是线程静态而不是构造参数：读纹理那条链（<c>TexReader.Default</c> → 容器读 → mip 读）是共享的
+    /// 无状态单例，把并行度一路传下去要改三个接口；而需要它的只有"当前这条线程要不要把活分出去"这一个判断，
+    /// 恰好是调用线程自己的事。读这个旋钮的只有父线程分派任务那一段，被派出去的任务体不再回头看它，
+    /// 所以线程静态不会被线程池的借还机制串味。
+    /// </summary>
+    public static class TexDecodeParallelism
+    {
+        [ThreadStatic] private static int _override;
+
+        /// <summary>0 = 按核数自适应的默认口径；1 = 一次只走一路（条目级并行时的收编档）；其余 = 并行度上限。</summary>
+        public static int Override
+        {
+            get => _override;
+            set => _override = value;
+        }
+
+        public static int Resolve(int mipmapCount)
+        {
+            if (mipmapCount <= 1) return 1;
+
+            var p = _override;
+            if (p == 0)
+            {
+                p = Environment.ProcessorCount / 2;
+                if (p < 2) p = 2;
+                if (p > 8) p = 8;
+            }
+            else if (p < 1)
+            {
+                p = 1;
+            }
+
+            return p > mipmapCount ? mipmapCount : p;
         }
     }
 }

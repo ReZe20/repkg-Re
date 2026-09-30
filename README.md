@@ -24,8 +24,12 @@ Feel free to report errors.
 
 ### Platforms
 Runs on Windows, Linux and macOS on .NET 10 (JIT), and ships NativeAOT single-file
-binaries for win-x64 and linux-x64. macOS support (memory sampling) is implemented
-but not yet verified on real hardware.
+binaries for win-x64, linux-x64 and macOS on Apple silicon (`osx-arm64`). Intel Macs
+have no AOT artifact — the compiler cannot cross-compile and CI has no Intel macOS
+runner — so they use the JIT build. macOS support rests on `sysctl` memory sampling;
+CI checks it on an Apple-silicon runner by asserting the `batch` startup gate line
+reports a non-zero `avail=…MB (sysctl)`, because a failed read degrades silently into
+a ~2 s stall per texture rather than an error.
 
 ### Commands
 - `--help` (or `-h`, `-?`) - lists the commands; `extract --help`, `info --help` and `batch --help` list the options of one command
@@ -265,6 +269,18 @@ output file, so entries cannot be spread over workers, and one materialized 8K t
 With `mpkgReduction = 1` (the default) the conversion is deliberately faithful rather than small: it never
 rescales a texture, so an output package is typically about twice the size of a Wallpaper Engine export made
 with a reduced quality setting (which halves every texture and re-encodes them).
+
+Byte-identity ends at the resize step. Any texture a reduction actually rescales (`preset 2x`/`4x` —
+the default `mpkgReduction = 1` rescales nothing) goes through ImageSharp's `Lanczos3`, and that
+assembly carries a separate implementation per CPU feature set (Avx2, Sse41, Vector4 …); the taps are
+float sums taken in a different order, so a few pixel components land on the wrong side of a rounding
+tie. The resample call does not care which decoder fed it, so the exposure is not limited to DXT
+sources; the decoders themselves are not implicated — every DXT→PNG decode `extract` produces is
+byte-identical across build flavors. Measured on a real package: 5 of 126 entries differ, every
+differing byte exactly ±1, container and entry table untouched. JIT as-is, NativeAOT, and JIT with
+`DOTNET_EnableHWIntrinsic=0` are three mutually different outputs for the same input and none is
+canonical, so compare artifacts byte for byte only within one build flavor; across flavors or
+machines, compare entry tables / sizes / formats.
 
 Not expressible in a manifest: `--tex`, `--recursive`, `--usename`, `--copyproject`,
 `--min-entry-size`, `--max-entry-size` (no manifest key exists for them), and `--lazy` - the batch

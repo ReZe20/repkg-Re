@@ -18,8 +18,8 @@ namespace RePKG_Re.Tests
         [SetUp]
         public void SetUp()
         {
-            Directory.CreateDirectory($"{TestHelper.BasePath}\\{OutputDirectoryName}\\");
-            Directory.CreateDirectory($"{TestHelper.BasePath}\\{ValidatedDirectoryName}\\");
+            Directory.CreateDirectory(Path.Combine(TestHelper.BasePath, OutputDirectoryName));
+            Directory.CreateDirectory(Path.Combine(TestHelper.BasePath, ValidatedDirectoryName));
 
             _reader = TexReader.Default;
             _texToImageConverter = new TexToImageConverter();
@@ -72,7 +72,8 @@ namespace RePKG_Re.Tests
         {
             var resultImage = _texToImageConverter.ConvertToImage(tex);
             
-            var path = $"{TestHelper.BasePath}\\{OutputDirectoryName}\\{name}.{resultImage.Format.GetFileExtension()}";
+            var path = Path.Combine(TestHelper.BasePath, OutputDirectoryName,
+                $"{name}.{resultImage.Format.GetFileExtension()}");
             
             File.WriteAllBytes(path, resultImage.Bytes);
         }
@@ -81,7 +82,7 @@ namespace RePKG_Re.Tests
         {
             // 语料是第三方壁纸素材、体积也不小,没入库(CI 与本机都可能没有)。缺文件时判"跳过"而不是"失败",
             // 这样 CI 能跑其余真实断言;本机把 .tex 放进 TestTextures/ 这批用例就自动生效。
-            var path = $"{TestHelper.BasePath}\\{InputDirectoryName}\\{name}.tex";
+            var path = Path.Combine(TestHelper.BasePath, InputDirectoryName, $"{name}.tex");
             if (!File.Exists(path))
                 Assert.Ignore($"缺少测试语料 {path}(放入 {InputDirectoryName}/ 即可启用这批用例)");
 
@@ -90,7 +91,7 @@ namespace RePKG_Re.Tests
 
         public static void SaveValidatedBytes(byte[] bytes, string name)
         {
-            using (var stream = File.Open($"{TestHelper.BasePath}\\{ValidatedDirectoryName}\\{name}.bytes",
+            using (var stream = File.Open(Path.Combine(TestHelper.BasePath, ValidatedDirectoryName, $"{name}.bytes"),
                 FileMode.Create,
                 FileAccess.Write,
                 FileShare.Read))
@@ -102,7 +103,7 @@ namespace RePKG_Re.Tests
 
         public static void ValidateBytes(byte[] bytes, string name)
         {
-            var validatedBytes = File.ReadAllBytes($"{TestHelper.BasePath}\\{ValidatedDirectoryName}\\{name}.bytes");
+            var validatedBytes = File.ReadAllBytes(Path.Combine(TestHelper.BasePath, ValidatedDirectoryName, $"{name}.bytes"));
 
             Assert.AreEqual(bytes.Length, validatedBytes.Length);
 

@@ -239,7 +239,7 @@ namespace RePKG_Re.Command
             var report = new LoosePackageBuilder().Build(projectDir, target, _options.ToBuilderOptions(),
                 (index, total, name) =>
                 {
-                    if (Program.Closing) Environment.Exit(0);
+                    if (RepkgCli.Closing) Environment.Exit(0);
                     progress?.Invoke(index, total, name);
                 });
 

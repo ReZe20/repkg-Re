@@ -24,11 +24,47 @@
   in a 512 MB / 1-core cage: 503 MB and 1 worker, where a root-only reading in the same cage still
   reported 14.6 GB.
 - **NativeAOT on linux-x64**: new `AotLinuxX64` publish profile. Platform P/Invokes are
-  guarded by runtime checks so the linker trims the non-target-platform code. Verified that a full
-  `batch` run through the AOT binary produces output byte-identical to the JIT build.
+  guarded by runtime checks so the linker trims the non-target-platform code. Verified against a
+  real wallpaper across nine batch modes: *within* one build flavor Windows and Linux produce 176
+  byte-identical output files (JIT↔JIT, and independently AOT↔AOT). Across the two flavors 175 of
+  those 176 also match; the one that does not is spelled out below.
+- **Byte-identity ends at the resize step**: any texture a reduction actually rescales
+  (`preset 2x`/`4x`; the default `mpkgReduction = 1` rescales nothing) is not reproducible across
+  build flavors. `MobileTextureMaterializer.Resample` asks ImageSharp for `Lanczos3`, and that
+  assembly carries a separate implementation per CPU feature set (Avx2, Sse41, Vector4 …) — the taps
+  are float sums taken in a different order, so a few components land on the wrong side of a
+  rounding tie. The decode is not implicated: the 175 files that do match include every DXT→PNG
+  decode `extract` produces. Measured with `noLz4` on a real package so the payload stays
+  uncompressed — 330,366,678 bytes on both sides — 5 of 126 entries differ, 67,417 bytes between
+  them, every one of them exactly ±1; container, entry table, dimensions and formats untouched.
+  Three mutually different outputs exist for the same input (JIT as-is, JIT with
+  `DOTNET_EnableHWIntrinsic=0`, and NativeAOT), so none of them is canonical. The rule we adopt:
+  compare artifacts byte for byte within one build flavor, and make cross-flavor or cross-machine
+  regression checks structural (entry table / sizes / formats) rather than hash-based.
+  `IlcInstructionSet` was deliberately left alone — it is program-wide, so it would cost every
+  decode path its vector speed, and since it only feeds the AOT build it could not close the
+  AOT↔JIT gap anyway. Still unmeasured: one flavor on a different CPU; every run above shared a host.
 - **Release pipeline publishes a Linux binary**: `release.yml` gains a `build-linux` job that
   produces the linux-x64 NativeAOT `tar.gz` next to the win-x64 zip — the `AotLinuxX64` profile
   above has been in the tree since the cross-platform work but was never wired to a publish step.
+- **NativeAOT on macOS (Apple silicon)**: new `AotOsxArm64` publish profile; `release.yml` gains a
+  `build-macos` job shipping `RePKG_Re-<ver>-osx-arm64.tar.gz` beside the other two, and `ci.yml`
+  gains a `build-test-macos` job (build + tests + the same AOT smoke). `osx-arm64` only: NativeAOT
+  cannot cross-compile and GitHub has retired its Intel mac runners, so Intel Macs stay on the JIT
+  build. Beyond the usual size and `--help` checks the mac job asserts one number — it runs `batch`
+  against a nonexistent input and requires the startup gate line to read `avail=<nonzero>MB
+  (sysctl)` (stderr; stdout is the JSON event protocol; the size check uses BSD `stat -f%z`, GNU's
+  `-c%s` errors out on macOS). That line is the whole point: every `sysctl` read inside
+  `AvailablePhysicalMacOS()` is `catch → return 0`, a zero budget makes `MemoryGate` wait 100×20 ms
+  per texture and then release anyway, so a broken sampling path surfaces as a silent ~2 s stall on
+  each `.tex` — no crash, no error, no nonzero exit. Whether `DllImport("libc")` binds at all on
+  macOS is not provable off Apple hardware (there, the exporter of `sysctl` is libSystem; on Linux
+  .NET rewrites `libc` to `libc.so.6`). That question is answered by the v0.5.4 release run itself: the
+  mac artifact reaches the Release only through those two assertions, so an `osx-arm64` tarball sitting
+  on the release page *is* the reading — `sysctl` returned non-zero on Apple hardware. Nor is there a
+  path that ships a mac binary which skipped the check: if the gate line reads `avail=0` (or `libc`
+  never binds), `build-macos` fails, `build`'s `needs` goes unmet, and no Release is created for any of
+  the three platforms.
 - **`mpkg` → `pkg` (reverse conversion)**: new batch `mode: "pkg"` (`PcPackageConverter` +
   `PkgRunner`). Rebuilds the container with the PC magic (default `PKGV0018`, overridable via
   `pkgMagic`), re-encodes our own materialized RGBA8 textures losslessly back into a PNG
@@ -210,6 +246,34 @@
   System.Text.Json to write manifests and read batch event lines (previously it relied on
   Newtonsoft transitively through Microsoft.NET.Test.Sdk — a test-chain dependency that never
   entered the publish payload anyway).
+- **Structure**: the CLI moves out of the console project into a new class library, `RePKG_Re.Cli`
+  (`Cli/`, `Command/`, `Helper/`, `Extensions.cs`, `Helper.cs`, entry point `RepkgCli.Run`). The
+  reason is a second host, not tidiness: WE Tool compiles this code into its own AOT image and runs
+  it as `WE_Tool.exe --repkg …` child process, and while the code lived inside `RePKG_Re.exe` that
+  meant either referencing an exe or carrying a copy that can drift. `RePKG_Re/Program.cs` is left
+  as a shell (`Main => RepkgCli.Run(args)`), and the Ctrl-C flag the runners poll becomes
+  `RepkgCli.Closing` so the host's own entry point can reach it. Namespaces, the command tree and
+  the output bytes are unchanged; `RePKG_Re.exe` still builds, publishes and ships as before, and
+  the AOT binary produced after the split was compared with the pre-split one over the 170-file
+  corpus with every hash equal. The test project's `ProjectReference` follows the code into
+  `RePKG_Re.Cli`; the split is internal engineering structure for this repo's own releases.
+- **Build**: the AOT publish directory now holds only `RePKG_Re.exe` + `THIRD-PARTY-NOTICES.txt`.
+  It used to also carry the native pdb (tens of MB) and three managed pdbs from the referenced
+  projects, and `release.yml` zips the whole directory — so they were shipping to users. The native
+  symbol file is turned off at its source (`CopyOutputSymbolsToPublishDirectory=false` under
+  `PublishAot`) rather than deleted after the fact, because the SDK's `_CopyAotSymbols` runs after
+  every post-publish target in this repo — an own cleanup target deleted it and the SDK copied it
+  back. The managed pdbs are removed from `ResolvedFileToPublish` right after
+  `ComputeResolvedFilesToPublishList`, and only when `PublishAot` is set: a plain `build` and a
+  framework-dependent publish still produce pdbs for debugging. Each packaging step in `release.yml`
+  now asserts the publish directory holds no symbol file before zipping/tarring it whole — the names
+  differ per platform (win `RePKG_Re.pdb`, linux `<exe>.dbg`, macOS `RePKG_Re.dSYM`, which is a
+  *bundle directory*), so the `.pdb`-extension filter cannot see the last two and the 5 MB size gate
+  only ever looks at the executable.
+- **Notices**: the list credited `CommandLineParser` with that project's MIT text long after this
+  release swapped the parser for System.CommandLine — the shipped license named a different project
+  under a different copyright holder than the code actually in the binary. It now reads
+  System.CommandLine 2.0.10, `.NET Foundation and Contributors`, MIT.
 
 ### 中文
 
@@ -227,9 +291,34 @@
   系统调用，22 条用例不需要真容器就能在任何平台跑完。`batch` 启动时向 stderr 打一行 `* gate: …`，说清每
   个数字各自来自哪个口径。512MB/1 核笼子实测 503MB、1 worker；同一个笼子里只读挂载根仍报 14.6GB。
 - **linux-x64 NativeAOT**：新增 `AotLinuxX64` 发布配置。平台 P/Invoke 由运行时判断守卫，linker 据此裁掉
-  非目标平台代码。实测 AOT 二进制跑一次完整 `batch`，产物与 JIT 构建逐字节一致。
+  非目标平台代码。用一个真壁纸在九种 batch 模式下对拍：**同一构建形态内部**，Windows 与 Linux 的 176 个产物
+  逐字节一致（JIT↔JIT 一次，AOT↔AOT 另一次）。跨两种形态时这 176 个里还有 175 个也对得上，对不上的那一个见下条。
+- **逐字节的边界在缩放这一步**：只要某个缩小档位真的改了像素尺寸（`preset 2x`/`4x`；默认的
+  `mpkgReduction = 1` 一张都不缩），产物就无法跨构建形态复现。`MobileTextureMaterializer.Resample` 找
+  ImageSharp 要的是 `Lanczos3`，而这个程序集里每种 CPU 特性集合各带一份实现（Avx2、Sse41、Vector4 …），
+  抽头是浮点累加、顺序不同，于是少数分量落到舍入平局的错误一侧。解码不背这个锅：对得上的那 175 个文件里
+  包含 `extract` 产出的每一张 DXT→PNG。开 `noLz4` 让载荷保持未压缩再比（两档位同为 330,366,678 字节）：
+  126 个条目里 5 个有差异，共 67,417 字节，每一处都恰好差 ±1；容器、条目表、尺寸、格式全部不受影响。
+  同一份输入存在三个互不相同的输出（JIT 原样、`DOTNET_EnableHWIntrinsic=0` 的 JIT、NativeAOT），
+  没有哪个是基准。我们采用的规则：比字节只在同一构建形态内部比；跨形态、跨机器的回归改用结构比对
+  （条目表/尺寸/格式）。`IlcInstructionSet` 刻意没有钉 —— 它管的是整个程序，等于拿所有解码路径的向量速度
+  去换，而且它只喂 AOT 那一侧，本来也补不上 AOT↔JIT 这道缝。还有一格没测：同一形态换一颗 CPU —— 上面所有
+  对拍共用的是同一个宿主。
 - **发布流水线带上 Linux 产物**：`release.yml` 新增 `build-linux` job，在 win-x64 zip 之外发布
   linux-x64 NativeAOT `tar.gz` —— 上面那个 `AotLinuxX64` 配置自跨平台那批起就在树里，但从没接进发布步骤。
+- **macOS（Apple 芯片）NativeAOT**：新增 `AotOsxArm64` 发布配置；`release.yml` 新增 `build-macos` job，
+  产出 `RePKG_Re-<ver>-osx-arm64.tar.gz` 与另两个平台并列，`ci.yml` 新增 `build-test-macos` job
+  （构建 + 测试 + 同一套 AOT 冒烟）。只出 `osx-arm64`：NativeAOT 不能交叉编译，而 GitHub 已把 Intel mac
+  runner 退役，所以 Intel Mac 继续走 JIT 那份。除了体积与 `--help` 两条常规判据，mac job 还断言一个数字
+  —— 拿一个不存在的输入跑一次 `batch`，要求启动时的 gate 行读出来是 `avail=<非零>MB (sysctl)`（走 stderr，
+  stdout 是 JSON 事件协议；体积用 BSD 的 `stat -f%z`，GNU 的 `-c%s` 在 mac 上直接报错）。这行读数才是本条的
+  全部意义：`AvailablePhysicalMacOS()` 里每一次 `sysctl` 都是 `catch → return 0`，预算为 0 时 `MemoryGate`
+  会每条纹理空等 100×20ms 然后照样放行 —— 采样口径坏掉的形态是每张 `.tex` 静默多花约 2 秒，不崩、不报错、
+  退出码也正常。而 `DllImport("libc")` 在 macOS 上究竟绑不绑得上（那边真正的提供者是 libSystem；Linux 上
+  .NET 会把 `libc` 改写成 `libc.so.6`），离开 Apple 硬件就证明不了。这个问题由 v0.5.4 的发布轮本身回答：
+  mac 产物要进 Release 必经那两道断言，所以发布页上出现 `osx-arm64` 的 tar.gz，它本身就是读数 —— `sysctl`
+  在 Apple 硬件上读出了非零。也没有"跳过检查照样发 mac 包"这条路：gate 行若读到 `avail=0`（或 `libc`
+  压根没绑上），`build-macos` 失败，`build` 的 `needs` 不满足，三个平台的 Release 一起不会创建。
 - **`mpkg` → `pkg`（逆向转换）**：新增 batch `mode: "pkg"`（`PcPackageConverter` + `PkgRunner`）。以 PC
   魔数重建容器（默认 `PKGV0018`，可用 `pkgMagic` 覆盖），把我们自己物化出的 RGBA8 纹理无损重编码回 PNG
   直通 blob，并从 `scene.json` 删除 `texturereduction` 键（新增 `SceneJsonPatcher.RemoveTextureReduction`）。
@@ -353,6 +442,24 @@
   平台的：有一条用例把本地抓来的真壁纸包当语料，只有那个文件在的时候才绿。
 - **声明**：第三方清单移除 Newtonsoft.Json 条目；测试工程也改用 System.Text.Json 写 manifest、读 batch
   事件行（此前它靠 Microsoft.NET.Test.Sdk 间接引用 Newtonsoft，那是测试链的传递依赖，本就不进发布产物）。
+- **结构**：CLI 从控制台工程搬进新的类库 `RePKG_Re.Cli`（`Cli/`、`Command/`、`Helper/`、`Extensions.cs`、
+  `Helper.cs`，入口 `RepkgCli.Run`）。动因是第二个宿主，不是整理：WE Tool 把这段代码编进自己的 AOT 镜像，
+  以 `WE_Tool.exe --repkg …` 当子进程跑，而代码留在 `RePKG_Re.exe` 里的话，那边要么引用一个 exe，要么带一份
+  可以各走各的副本。`RePKG_Re/Program.cs` 只留一层壳（`Main => RepkgCli.Run(args)`），各 runner 轮询的那个
+  Ctrl-C 标记改成 `RepkgCli.Closing`，宿主自己的入口才够得着。命名空间、命令树、输出字节都没变；
+  `RePKG_Re.exe` 照旧构建、发布、打包，拆分后产出的 AOT 二进制与拆分前的在 170 个文件的语料上逐个哈希相等。
+  测试工程的 `ProjectReference` 跟着代码进 `RePKG_Re.Cli`；对本仓库自己的发布而言，这只是内部工程结构。
+- **构建**：AOT 发布目录现在只剩 `RePKG_Re.exe` + `THIRD-PARTY-NOTICES.txt`。此前还带着原生 pdb（几十 MB）与
+  三个被引用工程的托管 pdb，而 `release.yml` 是整目录压缩 —— 等于跟着发给用户。原生符号改成从源头关掉
+  （`PublishAot` 时 `CopyOutputSymbolsToPublishDirectory=false`），不再事后删除：SDK 的 `_CopyAotSymbols`
+  排在本仓库所有发布后目标之后，实测删掉又被拷回来。托管 pdb 在 `ComputeResolvedFilesToPublishList` 之后从
+  `ResolvedFileToPublish` 里摘掉，且只在 `PublishAot` 时摘 —— 普通 build 与框架依赖发布照常产 pdb 供调试。
+  `release.yml` 的三处打包步骤现在都在"整目录压缩"之前先断言发布目录里没有符号文件：符号的名字三个平台各
+  不同（win=`RePKG_Re.pdb`、linux=`<exe>.dbg`、macOS=`RePKG_Re.dSYM` 而且是个 bundle 目录），按 `.pdb`
+  摘除那条盖不住后两种，而 5MB 的体积阈值只看 exe，也发现不了这种泄漏。
+- **声明**：清单里仍写着 CommandLineParser 并附那个项目的 MIT 全文，而这个版本早就把解析器换成了
+  System.CommandLine —— 随包许可写的项目与版权方，和二进制里真正编进去的不是同一个。现在按实际所依写：
+  System.CommandLine 2.0.10、`.NET Foundation and Contributors`、MIT。
 
 ## v0.5.3
 

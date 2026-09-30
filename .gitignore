@@ -8,3 +8,7 @@ Publish
 *.pubxml.user
 .reasonix
 .hermes
+*:Zone.Identifier
+RePKG_Re.Tests/TestTextures/
+RePKG_Re.Tests/TestTexturesValidated/
+RePKG_Re.Tests/Output/

@@ -14,6 +14,6 @@
 
     <ItemGroup>
       <ProjectReference Include="..\RePKG_Re.Application\RePKG_Re.Application.csproj" />
-      <ProjectReference Include="..\RePKG_Re\RePKG_Re.csproj" />
+      <ProjectReference Include="..\RePKG_Re.Cli\RePKG_Re.Cli.csproj" />
     </ItemGroup>
 </Project>

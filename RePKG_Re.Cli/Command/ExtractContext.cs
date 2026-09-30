@@ -516,7 +516,7 @@ namespace RePKG_Re.Command
         public void ExtractEntry(PackageEntry entry, ref string outputDirectory, int currentPos, int totalEntries,
             string eventId = null)
         {
-            if (Program.Closing)
+            if (RepkgCli.Closing)
                 Environment.Exit(0);
 
             try
@@ -669,7 +669,7 @@ namespace RePKG_Re.Command
 
         private ITex LoadTex(byte[] bytes, string name)
         {
-            if (Program.Closing)
+            if (RepkgCli.Closing)
                 Environment.Exit(0);
 
             Console.WriteLine("* Reading: {0}", name);

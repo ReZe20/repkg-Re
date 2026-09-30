@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <RootNamespace>RePKG_Re</RootNamespace>
+        <AssemblyName>RePKG_Re.Cli</AssemblyName>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <Version>0.5.4</Version>
+        <Authors>NotScuffed, ReZe20</Authors>
+        <Copyright>Copyright © NotScuffed 2019-2025, ReZe20 2026</Copyright>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\RePKG_Re.Application\RePKG_Re.Application.csproj" />
+        <ProjectReference Include="..\RePKG_Re.Core\RePKG_Re.Core.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="System.CommandLine" Version="2.0.10" />
+    </ItemGroup>
+</Project>

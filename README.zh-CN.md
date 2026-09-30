@@ -24,7 +24,7 @@ PKG 与 TEX 格式均由作者逆向得出。
 - 批处理模式：把 PC 包转换为移动端 `.mpkg` 包，以及反向转换
 
 ### 平台
-可在 Windows、Linux、macOS 上以 .NET 10（JIT）运行，并提供 win-x64 与 linux-x64 的 NativeAOT 单文件二进制。macOS 支持（内存采样）已实现但尚未在真实设备上验证。
+可在 Windows、Linux、macOS 上以 .NET 10（JIT）运行，并提供 win-x64、linux-x64 与 Apple 芯片 macOS（`osx-arm64`）的 NativeAOT 单文件二进制。Intel Mac 没有 AOT 产物——编译器不能交叉编译，CI 也没有 Intel mac runner——只能用 JIT 那份。macOS 侧的内存采样走 `sysctl`，CI 在 Apple 芯片的 runner 上核对它：断言 `batch` 启动那行 gate 报的是非零的 `avail=…MB (sysctl)`，因为读失败不会报错，只会让每张纹理静默多等约 2 秒。
 
 ### 命令
 - `--help`（或 `-h`、`-?`）- 列出命令；`extract --help`、`info --help`、`batch --help` 列出单个命令的选项
@@ -182,6 +182,15 @@ stdout 上只有这些事件 —— 每次运行打的那一行诊断
 
 `mpkgReduction = 1`（默认）时，转换刻意追求忠实而非小体积：从不缩放纹理，所以产出包大约是
 用降画质设置的 Wallpaper Engine 官方导出的两倍（官方导出会把所有纹理减半并重编码）。
+
+逐字节的边界在缩放这一步。只要某个缩小档位真的改了像素尺寸（`preset 2x`/`4x` —— 默认的
+`mpkgReduction = 1` 一张都不缩），就会走 ImageSharp 的 `Lanczos3`，而这个程序集里每种 CPU 特性集合各带一份
+实现（Avx2、Sse41、Vector4 …），抽头是浮点累加、顺序不同，于是少数像素分量落到舍入平局的错误一侧。
+缩放这一调用不问像素来自哪条解码路，所以暴露面不限于 DXT 素材；解码本身不背这个锅 —— `extract` 产出的
+每一张 DXT→PNG 在两种构建形态之间都逐字节一致。
+真包实测：126 个条目里 5 个有差异，不同的字节每一处都恰好差 ±1，容器与条目表不受影响。同一份输入存在
+三个互不相同的输出（JIT 原样、NativeAOT、`DOTNET_EnableHWIntrinsic=0` 的 JIT），没有哪个是基准 ——
+所以比字节只在同一构建形态内部比；跨形态、跨机器改比条目表 / 尺寸 / 格式。
 
 无法写进清单的选项：`--tex`、`--recursive`、`--usename`、`--copyproject`、`--min-entry-size`、
 `--max-entry-size`（没有对应的清单键），以及 `--lazy` —— 批处理执行器本来就是按需读取条目，

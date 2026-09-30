@@ -13,8 +13,9 @@ permissions:
   contents: read
 
 jobs:
-  # Linux 适配(见 RePKG_Re/Helper/SystemInfo*.cs、ProcessorInfo.cs):JIT 构建 + 单元测试 + 冒烟。
-  # 与 windows job 分离,因为 NativeAOT 只能在目标平台链接;Linux 侧暂只做框架依赖(JIT)。
+  # Linux 适配(见 RePKG_Re.Cli/Helper/SystemInfo*.cs、ProcessorInfo.cs):JIT 构建 + 单元测试 + 冒烟。
+  # 与 windows job 分离,因为 NativeAOT 只能在目标平台链接;Linux 侧两种形态都覆盖:JIT 的构建与测试,
+  # 外加 linux-x64 的 AOT 发布与冒烟。
   build-test-linux:
     runs-on: ubuntu-latest
     steps:
@@ -79,3 +80,47 @@ jobs:
           & $exe --help *> $null
           if ($LASTEXITCODE -ne 0) { throw "--help 冒烟失败 exit $LASTEXITCODE" }
           Write-Host "冒烟通过: $exe ($len 字节)"
+
+  # macOS:runner 本身就是 Apple silicon,所以这里不只是"能编过",而是**第一次在真 mac 上执行**——
+  # 内存采样(SystemInfo.MacOS.cs 走 sysctl)与物理核口径在写进 README 之前,只有代码、没有读数。
+  # 只出 osx-arm64:NativeAOT 不能交叉编译,而 GitHub 已无 Intel mac runner(macos-13 退役),
+  # Intel Mac 用户走 JIT(dotnet RePKG_Re.dll),与本仓库 README 的平台口径一致。
+  build-test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建
+        run: dotnet build RePKG_Re.sln -c Release --nologo -v:m
+
+      - name: 单元测试
+        run: dotnet test RePKG_Re.Tests/RePKG_Re.Tests.csproj -c Release --nologo -v:m
+
+      - name: 发布 osx-arm64 NativeAOT 并冒烟
+        run: |
+          dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotOsxArm64 --nologo -v:m
+          exe=RePKG_Re/bin/publish-aot-osx/RePKG_Re
+          test -f "$exe" || { echo "未找到 AOT 产物: $exe"; exit 1; }
+          chmod +x "$exe"
+          len=$(stat -f%z "$exe")
+          # 阈值 5MB 同 win/linux(见那里注释);stat 用 BSD 语法,GNU 的 -c%s 在 mac 上直接报错
+          [ "$len" -ge 5242880 ] || { echo "AOT 产物体积异常($len 字节 < 5MB),疑似退回框架依赖"; exit 1; }
+          if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
+          echo "冒烟通过: $exe ($len 字节)"
+
+      # 这条才是 macOS 适配的真正判据。批处理的 gate 行走 stderr(stdout 是 JSON 事件协议),
+      # 且在动手拆包之前就打印,所以 input 指向不存在的路径也照样有读数(错误按事件上报)。
+      # 断言 avail>0 的理由:AvailablePhysicalMacOS() 任一 sysctl 读不到就返回 0,0 会让内存闸
+      # 每条 TEX 转换重试 100×20ms 后放行 —— 不崩、不报错,只是每条白等 2 秒。这种退化只能读数字看出来。
+      - name: 验 macOS 内存采样口径
+        run: |
+          exe=RePKG_Re/bin/publish-aot-osx/RePKG_Re
+          printf '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}\n' > gate-probe.json
+          "$exe" batch --manifest gate-probe.json --threads 1 >/dev/null 2>gate-probe.log || echo "batch 退出码 $? (与本判据无关,只核对读数)"
+          cat gate-probe.log
+          grep -qE 'avail=[1-9][0-9]*MB \(sysctl\)' gate-probe.log || { echo "macOS 内存采样失败:gate 行不是 avail>0 (sysctl)"; exit 1; }
+          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \(sysctl\)' gate-probe.log)"

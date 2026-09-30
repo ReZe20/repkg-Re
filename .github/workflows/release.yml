@@ -53,6 +53,12 @@ jobs:
         run: |
           ver="${INPUTS_VERSION:-$GITHUB_REF_NAME}"
           case "$ver" in v*) ;; *) ver=dev ;; esac
+          # 整目录打包的守卫:符号文件三个平台名字不同(win=RePKG_Re.pdb / linux=<exe>.dbg /
+          # macOS=RePKG_Re.dSYM 而且是 bundle 目录),csproj 里按 %(Extension)=='.pdb' 摘托管 pdb 的
+          # target 抓不到后两种。真正盖住三个平台的是 SDK 的 CopyOutputSymbolsToPublishDirectory=false
+          # (见 _CopyAotSymbols 的无条件),这里钉住它别被谁改回去 —— 体积阈值只看 exe,盖不住这种泄漏。
+          hits=$(find RePKG_Re/bin/publish-aot-linux \( -name '*.pdb' -o -name '*.dbg' -o -name '*.dSYM' \) -print)
+          [ -z "$hits" ] || { echo "发布目录混进符号文件: $hits"; exit 1; }
           tar -C RePKG_Re/bin/publish-aot-linux -czf "RePKG_Re-$ver-linux-x64.tar.gz" .
           echo "artifact_name=RePKG_Re-$ver-linux-x64.tar.gz" >> "$GITHUB_ENV"
 
@@ -65,8 +71,65 @@ jobs:
           name: linux-x64
           path: ${{ env.artifact_name }}
 
+  # macOS 产物:与 ci.yml 的 build-test-macos 同源(profile/阈值/判据一致)。runner 是 Apple silicon,
+  # 所以这个 exe 在挂进 Release 之前已经在真 mac 上跑过 --help 与 gate 读数(见 ci.yml 里的理由)。
+  # 只发 osx-arm64 —— NativeAOT 不能交叉编译,且 GitHub 已无 Intel mac runner;Intel Mac 走 JIT。
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 发布 osx-arm64 NativeAOT（自包含单文件，免 .NET 运行时）
+        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotOsxArm64 --nologo -v:m
+
+      - name: 冒烟验证 AOT 产物可独立运行
+        run: |
+          exe=RePKG_Re/bin/publish-aot-osx/RePKG_Re
+          test -f "$exe" || { echo "未找到 AOT 产物: $exe"; exit 1; }
+          chmod +x "$exe"
+          len=$(stat -f%z "$exe")
+          [ "$len" -ge 5242880 ] || { echo "AOT 产物体积异常($len 字节 < 5MB),疑似退回框架依赖"; exit 1; }
+          if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
+          echo "冒烟通过: $exe ($len 字节)"
+
+      # 与 ci.yml 同一判据:内存闸的读数必须是 avail>0 (sysctl)。0 = sysctl 口径读不到,
+      # 后果是每条 TEX 转换白等 2 秒后放行(不崩不报错,只是慢),所以不能只测"--help 没崩"。
+      - name: 验 macOS 内存采样口径
+        run: |
+          exe=RePKG_Re/bin/publish-aot-osx/RePKG_Re
+          printf '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}\n' > gate-probe.json
+          "$exe" batch --manifest gate-probe.json --threads 1 >/dev/null 2>gate-probe.log || echo "batch 退出码 $? (与本判据无关,只核对读数)"
+          cat gate-probe.log
+          grep -qE 'avail=[1-9][0-9]*MB \(sysctl\)' gate-probe.log || { echo "macOS 内存采样失败:gate 行不是 avail>0 (sysctl)"; exit 1; }
+          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \(sysctl\)' gate-probe.log)"
+
+      - name: 打包 tar.gz
+        run: |
+          ver="${INPUTS_VERSION:-$GITHUB_REF_NAME}"
+          case "$ver" in v*) ;; *) ver=dev ;; esac
+          # 守卫同 linux job。macOS 这一支最需要:它的原生符号是 RePKG_Re.dSYM(bundle 目录,不是文件),
+          # 既不在 csproj 的 .pdb 过滤范围,也不会被 5MB 体积阈值发现 —— tar 是整目录,漏了就直接进发布包。
+          # find 的写法保持 BSD 兼容(mac 无 GNU 的 -exit)。
+          hits=$(find RePKG_Re/bin/publish-aot-osx \( -name '*.pdb' -o -name '*.dbg' -o -name '*.dSYM' \) -print)
+          [ -z "$hits" ] || { echo "发布目录混进符号文件: $hits"; exit 1; }
+          tar -C RePKG_Re/bin/publish-aot-osx -czf "RePKG_Re-$ver-osx-arm64.tar.gz" .
+          echo "artifact_name=RePKG_Re-$ver-osx-arm64.tar.gz" >> "$GITHUB_ENV"
+
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
+      - name: 交给 release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: osx-arm64
+          path: ${{ env.artifact_name }}
+
   build:
-    needs: build-linux
+    needs: [build-linux, build-macos]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,10 +163,19 @@ jobs:
         with:
           name: linux-x64
 
+      - name: 下载 macOS 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: osx-arm64
+
       - name: 打包 zip 并生成版本介绍
         shell: pwsh
         run: |
           $ver = if ("${{ inputs.version }}") { "${{ inputs.version }}" } elseif ("${{ github.ref_name }}" -like "v*") { "${{ github.ref_name }}" } else { "dev" }
+          # 整目录 zip 前的守卫,同 linux/macos 两个 job:符号文件不该出现在发布目录里
+          # (原生符号由 CopyOutputSymbolsToPublishDirectory=false 从源头关掉,托管 pdb 由 csproj 摘除)。
+          $symbols = @(Get-ChildItem "RePKG_Re/bin/publish-aot" -Recurse -Force -Include "*.pdb","*.dbg")
+          if ($symbols.Count -gt 0) { throw "发布目录混进符号文件: $($symbols.Name -join ', ')" }
           Compress-Archive -Path "RePKG_Re/bin/publish-aot/*" -DestinationPath "RePKG_Re-$ver-win-x64.zip"
           echo "version=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -137,6 +209,7 @@ jobs:
           files: |
             RePKG_Re-${{ env.version }}-win-x64.zip
             RePKG_Re-${{ env.version }}-linux-x64.tar.gz
+            RePKG_Re-${{ env.version }}-osx-arm64.tar.gz
 
       - name: 创建 Release（自动生成介绍）
         if: env.HAS_BODY != 'true'
@@ -146,4 +219,5 @@ jobs:
           files: |
             RePKG_Re-${{ env.version }}-win-x64.zip
             RePKG_Re-${{ env.version }}-linux-x64.tar.gz
+            RePKG_Re-${{ env.version }}-osx-arm64.tar.gz
           generate_release_notes: true

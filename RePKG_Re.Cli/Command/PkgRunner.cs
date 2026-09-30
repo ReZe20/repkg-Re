@@ -128,7 +128,7 @@ namespace RePKG_Re.Command
             var converter = new PcPackageConverter();
             var report = converter.Convert(pkg.FullName, target, options, (index, ofPackage, entry) =>
             {
-                if (Program.Closing)
+                if (RepkgCli.Closing)
                     Environment.Exit(0);
 
                 EmitEntry(wallpaper.Id, cursor, entry);

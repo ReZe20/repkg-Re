@@ -300,7 +300,7 @@ namespace RePKG_Re.Command
 
             public void OnEntry(int index, int ofPackage, string entry)
             {
-                if (Program.Closing) Environment.Exit(0);
+                if (RepkgCli.Closing) Environment.Exit(0);
                 _runner.EmitEntry(Wallpaper.Id, Cursor, entry);
             }
 

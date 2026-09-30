@@ -17,13 +17,18 @@
         <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
     </PropertyGroup>
 
-    <ItemGroup>
-        <ProjectReference Include="..\RePKG_Re.Application\RePKG_Re.Application.csproj" />
-        <ProjectReference Include="..\RePKG_Re.Core\RePKG_Re.Core.csproj" />
-    </ItemGroup>
+    <!-- AOT 发布目录里连托管 pdb 也不留(RePKG_Re.Cli/.Application/.Core 三份)。
+         release.yml 是 Compress-Archive publish-aot/* 整目录打包,留着就是发布包里白装三个文件。
+         上面那条只管原生符号,这三份走的是发布清单,所以在清单成型后剔掉;
+         只在 PublishAot 时剔——普通 build 与框架依赖发布仍产 pdb 供调试。 -->
+    <Target Name="DropManagedPdbFromAotPublish" AfterTargets="ComputeResolvedFilesToPublishList" Condition="'$(PublishAot)' == 'true'">
+        <ItemGroup>
+            <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb'" />
+        </ItemGroup>
+    </Target>
 
     <ItemGroup>
-        <PackageReference Include="System.CommandLine" Version="2.0.10" />
+        <ProjectReference Include="..\RePKG_Re.Cli\RePKG_Re.Cli.csproj" />
     </ItemGroup>
 
     <ItemGroup>

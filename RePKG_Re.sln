@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RePKG_Re.Core", "RePKG_Re.C
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RePKG_Re.Application", "RePKG_Re.Application\RePKG_Re.Application.csproj", "{DDFFD8D1-3961-4F1B-B778-1CAC5622AA19}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RePKG_Re.Cli", "RePKG_Re.Cli\RePKG_Re.Cli.csproj", "{7C1B4A9E-5D38-4F2A-9B6C-1E4D7A0F3B58}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -33,6 +35,10 @@ Global
 		{DDFFD8D1-3961-4F1B-B778-1CAC5622AA19}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DDFFD8D1-3961-4F1B-B778-1CAC5622AA19}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DDFFD8D1-3961-4F1B-B778-1CAC5622AA19}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7C1B4A9E-5D38-4F2A-9B6C-1E4D7A0F3B58}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7C1B4A9E-5D38-4F2A-9B6C-1E4D7A0F3B58}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7C1B4A9E-5D38-4F2A-9B6C-1E4D7A0F3B58}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7C1B4A9E-5D38-4F2A-9B6C-1E4D7A0F3B58}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

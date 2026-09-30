@@ -26,10 +26,11 @@ Feel free to report errors.
 Runs on Windows, Linux and macOS on .NET 10 (JIT), and ships NativeAOT single-file
 binaries for win-x64, linux-x64 and macOS on Apple silicon (`osx-arm64`). Intel Macs
 have no AOT artifact — the compiler cannot cross-compile and CI has no Intel macOS
-runner — so they use the JIT build. macOS support rests on `sysctl` memory sampling;
-CI checks it on an Apple-silicon runner by asserting the `batch` startup gate line
-reports a non-zero `avail=…MB (sysctl)`, because a failed read degrades silently into
-a ~2 s stall per texture rather than an error.
+runner — so they use the JIT build. macOS memory sampling takes the total and the page size
+from `sysctl(CTL_HW, …)` and the page counts from Mach's `host_statistics64`; CI checks it on
+an Apple-silicon runner by asserting the `batch` startup gate line reports a non-zero
+`avail=…MB (sysctl+mach)`, because a failed read degrades silently into a ~2 s stall per
+texture rather than an error.
 
 ### Commands
 - `--help` (or `-h`, `-?`) - lists the commands; `extract --help`, `info --help` and `batch --help` list the options of one command

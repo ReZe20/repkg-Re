@@ -96,16 +96,17 @@ jobs:
           if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
           echo "冒烟通过: $exe ($len 字节)"
 
-      # 与 ci.yml 同一判据:内存闸的读数必须是 avail>0 (sysctl)。0 = sysctl 口径读不到,
+      # 与 ci.yml 同一判据:内存闸的读数必须是 avail>0 (sysctl+mach)。0 = 采样某一环读不到,
       # 后果是每条 TEX 转换白等 2 秒后放行(不崩不报错,只是慢),所以不能只测"--help 没崩"。
+      # 失败时来源串会带出是哪一步(见 SystemInfo.MacOS.cs 的 _macFailure),不必再猜。
       - name: 验 macOS 内存采样口径
         run: |
           exe=RePKG_Re/bin/publish-aot-osx/RePKG_Re
           printf '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}\n' > gate-probe.json
           "$exe" batch --manifest gate-probe.json --threads 1 >/dev/null 2>gate-probe.log || echo "batch 退出码 $? (与本判据无关,只核对读数)"
           cat gate-probe.log
-          grep -qE 'avail=[1-9][0-9]*MB \(sysctl\)' gate-probe.log || { echo "macOS 内存采样失败:gate 行不是 avail>0 (sysctl)"; exit 1; }
-          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \(sysctl\)' gate-probe.log)"
+          grep -qE 'avail=[1-9][0-9]*MB \(sysctl\+mach\)' gate-probe.log || { echo "macOS 内存采样失败:gate 行不是 avail>0 (sysctl+mach)"; exit 1; }
+          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \(sysctl\+mach\)' gate-probe.log)"
 
       - name: 打包 tar.gz
         run: |

@@ -82,7 +82,8 @@ jobs:
           Write-Host "冒烟通过: $exe ($len 字节)"
 
   # macOS:runner 本身就是 Apple silicon,所以这里不只是"能编过",而是**第一次在真 mac 上执行**——
-  # 内存采样(SystemInfo.MacOS.cs 走 sysctl)与物理核口径在写进 README 之前,只有代码、没有读数。
+  # 内存采样(SystemInfo.MacOS.cs:总量/页大小走 sysctl、页计数走 Mach host_statistics64)与物理核口径
+  # 在写进 README 之前,只有代码、没有读数。
   # 只出 osx-arm64:NativeAOT 不能交叉编译,而 GitHub 已无 Intel mac runner(macos-13 退役),
   # Intel Mac 用户走 JIT(dotnet RePKG_Re.dll),与本仓库 README 的平台口径一致。
   build-test-macos:
@@ -97,8 +98,23 @@ jobs:
       - name: 构建
         run: dotnet build RePKG_Re.sln -c Release --nologo -v:m
 
+      # mac 上的测试宿主曾经在本 job 第一次执行时原生崩溃("Test host process crashed",启动后 0.55 秒),
+      # 而默认输出什么都不留:不知道卡在哪个用例、也没有栈。--blame-crash 让崩溃时留原生 dump,
+      # --diag 把 vstest 自己的日志落到 /tmp/dotnet_support;两者只在失败时作为产物上传。
       - name: 单元测试
-        run: dotnet test RePKG_Re.Tests/RePKG_Re.Tests.csproj -c Release --nologo -v:m
+        run: >
+          dotnet test RePKG_Re.Tests/RePKG_Re.Tests.csproj -c Release --nologo -v:m
+          --blame-crash --diag:/tmp/dotnet_support/vstest.log
+
+      - name: 上传测试崩溃证据
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-test-crash
+          path: |
+            /tmp/dotnet_support/**
+            **/*.dmp
+          if-no-files-found: ignore
 
       - name: 发布 osx-arm64 NativeAOT 并冒烟
         run: |
@@ -114,13 +130,15 @@ jobs:
 
       # 这条才是 macOS 适配的真正判据。批处理的 gate 行走 stderr(stdout 是 JSON 事件协议),
       # 且在动手拆包之前就打印,所以 input 指向不存在的路径也照样有读数(错误按事件上报)。
-      # 断言 avail>0 的理由:AvailablePhysicalMacOS() 任一 sysctl 读不到就返回 0,0 会让内存闸
+      # 断言 avail>0 的理由:AvailablePhysicalMacOS() 任一环节读不到就返回 0,0 会让内存闸
       # 每条 TEX 转换重试 100×20ms 后放行 —— 不崩、不报错,只是每条白等 2 秒。这种退化只能读数字看出来。
+      # 来源串是 "sysctl+mach"(总量与页大小走 sysctl、页计数走 Mach host_statistics64);读不出来时
+      # 它会变成 "sysctl+mach 失败:<哪一步> <errno/rc>",所以失败也自带定位信息。
       - name: 验 macOS 内存采样口径
         run: |
           exe=RePKG_Re/bin/publish-aot-osx/RePKG_Re
           printf '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}\n' > gate-probe.json
           "$exe" batch --manifest gate-probe.json --threads 1 >/dev/null 2>gate-probe.log || echo "batch 退出码 $? (与本判据无关,只核对读数)"
           cat gate-probe.log
-          grep -qE 'avail=[1-9][0-9]*MB \(sysctl\)' gate-probe.log || { echo "macOS 内存采样失败:gate 行不是 avail>0 (sysctl)"; exit 1; }
-          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \(sysctl\)' gate-probe.log)"
+          grep -qE 'avail=[1-9][0-9]*MB \(sysctl\+mach\)' gate-probe.log || { echo "macOS 内存采样失败:gate 行不是 avail>0 (sysctl+mach)"; exit 1; }
+          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \(sysctl\+mach\)' gate-probe.log)"

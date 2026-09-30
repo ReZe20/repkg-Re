@@ -7,7 +7,8 @@ namespace RePKG_Re
     /// 跨平台系统信息门面:可用物理内存、进程工作集归还。
     /// Windows 保持原有 GlobalMemoryStatusEx / SetProcessWorkingSetSize 语义;
     /// Linux 用 /proc/meminfo 的 MemAvailable(再与 cgroup 限额取更严的一侧)+ malloc_trim(3);
-    /// macOS 用 sysctl(hw.memsize / vm.page_free_size)。
+    /// macOS 用 sysctl(hw.memsize + hw.pagesize)取总量与页大小,页计数走 Mach 的
+    /// host_statistics64(HOST_VM_INFO64) —— CTL_VM 下面没有任何页计数名号,见 SystemInfo.MacOS.cs 头部。
     /// 平台实现拆为 partial 文件并由 OperatingSystem.Is*() 运行时分支调用,
     /// AOT/裁剪分析据此把非目标平台的 P/Invoke 整方法裁掉(文档化模式)。
     /// 注意:不使用 #if LINUX/WINDOWS 编译符号 —— 无 RID 的框架依赖构建下它们不定义,会误裁。
@@ -46,7 +47,7 @@ namespace RePKG_Re
         {
             if (OperatingSystem.IsWindows()) return "GlobalMemoryStatusEx";
             if (OperatingSystem.IsLinux()) return ReadAvailableLinux().Source;
-            if (OperatingSystem.IsMacOS()) return "sysctl";
+            if (OperatingSystem.IsMacOS()) return MacMemorySource();
             return "unavailable";
         }
 

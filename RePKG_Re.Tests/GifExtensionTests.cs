@@ -241,7 +241,7 @@ namespace RePKG_Re.Tests
             // 内容必须是真正的 GIF(修复前是 GIF 内容 + .png 名字)
             var header = new byte[6];
             using (var fs = File.OpenRead(Path.Combine(_tempDir, "o1", "tex", "anim.gif")))
-                fs.Read(header, 0, 6);
+                fs.ReadExactly(header);
             var magic = Encoding.ASCII.GetString(header);
             Assert.IsTrue(magic == "GIF89a" || magic == "GIF87a",
                 $"expected GIF magic, got: {magic}");

@@ -53,18 +53,37 @@
   cannot cross-compile and GitHub has retired its Intel mac runners, so Intel Macs stay on the JIT
   build. Beyond the usual size and `--help` checks the mac job asserts one number — it runs `batch`
   against a nonexistent input and requires the startup gate line to read `avail=<nonzero>MB
-  (sysctl)` (stderr; stdout is the JSON event protocol; the size check uses BSD `stat -f%z`, GNU's
-  `-c%s` errors out on macOS). That line is the whole point: every `sysctl` read inside
-  `AvailablePhysicalMacOS()` is `catch → return 0`, a zero budget makes `MemoryGate` wait 100×20 ms
-  per texture and then release anyway, so a broken sampling path surfaces as a silent ~2 s stall on
-  each `.tex` — no crash, no error, no nonzero exit. Whether `DllImport("libc")` binds at all on
-  macOS is not provable off Apple hardware (there, the exporter of `sysctl` is libSystem; on Linux
-  .NET rewrites `libc` to `libc.so.6`). That question is answered by the v0.5.4 release run itself: the
-  mac artifact reaches the Release only through those two assertions, so an `osx-arm64` tarball sitting
-  on the release page *is* the reading — `sysctl` returned non-zero on Apple hardware. Nor is there a
-  path that ships a mac binary which skipped the check: if the gate line reads `avail=0` (or `libc`
-  never binds), `build-macos` fails, `build`'s `needs` goes unmet, and no Release is created for any of
-  the three platforms.
+  (sysctl+mach)` (stderr; stdout is the JSON event protocol; the size check uses BSD `stat -f%z`,
+  GNU's `-c%s` errors out on macOS). That line is the whole point: a zero budget makes `MemoryGate`
+  wait 100×20 ms per texture and then release anyway, so a broken sampling path surfaces as a silent
+  ~2 s stall on each `.tex` — no crash, no error, no nonzero exit. Tag v0.5.4 was the first execution
+  on Apple hardware, and the check cannot be skipped while still shipping: `build` requires
+  `build-macos`, so a failed assertion means no Release for any platform.
+- **macOS memory sampling could not have returned anything but 0** (both errors surfaced on the first
+  run on Apple hardware): the page counts were read from `CTL_VM` names `30/15/17/27`, which is
+  *FreeBSD*'s numbering — xnu's `CTL_VM` exposes only `VM_METER`, `VM_LOADAVG`, `VM_MACHFACTOR` and
+  `VM_SWAPUSAGE`, so there is no page size and no page count in that subtree at all
+  (`bsd/sys/sysctl.h`); and `sysctl`'s first argument is `int *name` plus `namelen`, which the
+  P/Invoke had flattened into two by-value `int`s, so even the one legitimate read (`hw.memsize`)
+  failed. Both stayed invisible because every failure path collapsed into a `return 0` behind a bare
+  `catch`. Now: total and page size come from `sysctl(CTL_HW, HW_MEMSIZE)` and `(CTL_HW, HW_PAGESIZE)`,
+  the counts from Mach's `host_statistics64(HOST_VM_INFO64)` (`active_count + wire_count +
+  compressor_page_count`), read field by field through a blittable struct — no hand-written offsets,
+  no reflection, AOT-safe. Every failure writes *which step* failed together with its `errno` /
+  `kern_return_t` into the reading itself (`DescribeMemorySource()` →
+  `sysctl+mach failed:sysctl:hw.pagesize rc=… errno=…`), so `avail=0MB (…)` explains itself instead of
+  costing a release cycle to decode. Whether `DllImport("libc")` binds on macOS is still unproven —
+  the `--help` smoke never touches it — the difference is that it would now say so
+  (`DllNotFoundException` lands in the reading) instead of swallowing it.
+- **CI (macOS)**: the same first run crashed the *test host* in `ci.yml`'s mac job — `dotnet test`
+  aborted 0.55 s in with `Test host process crashed`, naming no test and giving no stack. That step
+  now runs with `--blame-crash --diag:/tmp/dotnet_support/vstest.log` and uploads the evidence as an
+  artifact on failure. Scope it honestly: this does **not** gate a release — `release.yml`'s
+  `build-macos` publishes, smokes, asserts the gate reading, and runs no tests.
+- **Fix (tests)**: `GifExtensionTests` read the GIF magic with `fs.Read(header, 0, 6)` and ignored the
+  return value, so a short read would assert against bytes that were never written — exactly what
+  analyzer warning CA2022 flags. Now `ReadExactly`. The warning had been hidden locally by an
+  incremental build that never recompiled the test project, so the analyzer had not run on it.
 - **`mpkg` → `pkg` (reverse conversion)**: new batch `mode: "pkg"` (`PcPackageConverter` +
   `PkgRunner`). Rebuilds the container with the PC magic (default `PKGV0018`, overridable via
   `pkgMagic`), re-encodes our own materialized RGBA8 textures losslessly back into a PNG
@@ -310,15 +329,31 @@
   产出 `RePKG_Re-<ver>-osx-arm64.tar.gz` 与另两个平台并列，`ci.yml` 新增 `build-test-macos` job
   （构建 + 测试 + 同一套 AOT 冒烟）。只出 `osx-arm64`：NativeAOT 不能交叉编译，而 GitHub 已把 Intel mac
   runner 退役，所以 Intel Mac 继续走 JIT 那份。除了体积与 `--help` 两条常规判据，mac job 还断言一个数字
-  —— 拿一个不存在的输入跑一次 `batch`，要求启动时的 gate 行读出来是 `avail=<非零>MB (sysctl)`（走 stderr，
-  stdout 是 JSON 事件协议；体积用 BSD 的 `stat -f%z`，GNU 的 `-c%s` 在 mac 上直接报错）。这行读数才是本条的
-  全部意义：`AvailablePhysicalMacOS()` 里每一次 `sysctl` 都是 `catch → return 0`，预算为 0 时 `MemoryGate`
-  会每条纹理空等 100×20ms 然后照样放行 —— 采样口径坏掉的形态是每张 `.tex` 静默多花约 2 秒，不崩、不报错、
-  退出码也正常。而 `DllImport("libc")` 在 macOS 上究竟绑不绑得上（那边真正的提供者是 libSystem；Linux 上
-  .NET 会把 `libc` 改写成 `libc.so.6`），离开 Apple 硬件就证明不了。这个问题由 v0.5.4 的发布轮本身回答：
-  mac 产物要进 Release 必经那两道断言，所以发布页上出现 `osx-arm64` 的 tar.gz，它本身就是读数 —— `sysctl`
-  在 Apple 硬件上读出了非零。也没有"跳过检查照样发 mac 包"这条路：gate 行若读到 `avail=0`（或 `libc`
-  压根没绑上），`build-macos` 失败，`build` 的 `needs` 不满足，三个平台的 Release 一起不会创建。
+  —— 拿一个不存在的输入跑一次 `batch`，要求启动时的 gate 行读出来是 `avail=<非零>MB (sysctl+mach)`（走
+  stderr，stdout 是 JSON 事件协议；体积用 BSD 的 `stat -f%z`，GNU 的 `-c%s` 在 mac 上直接报错）。这行读数
+  才是本条的全部意义：预算为 0 时 `MemoryGate` 会每条纹理空等 100×20ms 然后照样放行 —— 采样口径坏掉的形态
+  是每张 `.tex` 静默多花约 2 秒，不崩、不报错、退出码也正常。tag v0.5.4 是这段代码第一次在 Apple 硬件上
+  执行，而"跳过检查还能把 mac 包发出去"这条路不存在：`build` 依赖 `build-macos`，断言一红三个平台的 Release
+  一起不出。
+- **macOS 的内存采样本来不可能返回非零**（第一次真机执行就抓出两处错）：页计数是从 `CTL_VM` 的名号
+  `30/15/17/27` 读的，那是 **FreeBSD** 的编号 —— xnu 的 `CTL_VM` 底下只有 `VM_METER`、`VM_LOADAVG`、
+  `VM_MACHFACTOR`、`VM_SWAPUSAGE`，既没有页大小也没有页计数（`bsd/sys/sysctl.h`）；而 `sysctl` 的第一个参数
+  是 `int *name` 加 `namelen`，之前的 P/Invoke 把它摊成了两个按值的 `int`，于是连唯一合法的那次读
+  （`hw.memsize`）也失败。两处错误都看不见，因为每条失败路径都塌进裸 `catch` 后面的 `return 0`。现在：总量
+  与页大小走 `sysctl(CTL_HW, HW_MEMSIZE)` 与 `(CTL_HW, HW_PAGESIZE)`，页计数走 Mach 的
+  `host_statistics64(HOST_VM_INFO64)`（取 `active_count + wire_count + compressor_page_count`），用一个
+  blittable 结构按字段读 —— 既不手写偏移也不用反射，AOT 安全。每一处失败都把"是哪一步"连同它的 `errno` /
+  `kern_return_t` 写进读数本身（`DescribeMemorySource()` 变成
+  `sysctl+mach failed:sysctl:hw.pagesize rc=… errno=…`），让 `avail=0MB (…)` 自己解释自己，而不是再花一轮
+  发布周期去反推。`DllImport("libc")` 在 mac 上究竟绑不绑得上仍未被证明（`--help` 冒烟根本不碰它），区别只在
+  于现在它会说出来（`DllNotFoundException` 出现在读数里），而不是把它咽掉。
+- **CI（macOS）**：同一次首跑里，`ci.yml` 的 mac job 在 `dotnet test` 上崩了测试宿主 —— 开始 0.55 秒后报
+  `Test host process crashed`，既不说卡在哪个用例也不给栈。那条步骤现在带
+  `--blame-crash --diag:/tmp/dotnet_support/vstest.log` 跑，失败时把这些证据作为产物上传。影响面说清楚：
+  这条**不挡发布** —— `release.yml` 的 `build-macos` 只做发布、冒烟与 gate 断言，不跑测试。
+- **修复（测试）**：`GifExtensionTests` 用 `fs.Read(header, 0, 6)` 读 GIF 魔数却把返回值丢了 —— 一次短读
+  就会拿从未写入的字节去断言（分析器警告 CA2022 点的正是这个），改成 `ReadExactly`。这条警告此前被本机的
+  增量构建遮住：那次构建没重编测试工程，分析器压根没跑过它。
 - **`mpkg` → `pkg`（逆向转换）**：新增 batch `mode: "pkg"`（`PcPackageConverter` + `PkgRunner`）。以 PC
   魔数重建容器（默认 `PKGV0018`，可用 `pkgMagic` 覆盖），把我们自己物化出的 RGBA8 纹理无损重编码回 PNG
   直通 blob，并从 `scene.json` 删除 `texturereduction` 键（新增 `SceneJsonPatcher.RemoveTextureReduction`）。

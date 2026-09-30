@@ -1,168 +1,103 @@
 # Changelog / 更新日志
 
+> 每条改动一行，行首标类型 —— New / Changed / Deprecated / Removed / Fixed（新增 / 变更 / 弃用 / 移除 / 修复），
+> 类别沿用 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。正文只写改了什么，机制与取舍见 README。
+> 条目从 `git log <上一个 tag>..<本 tag>` 里取：本版自己新写的代码里出的毛病不算修复，也不拿开发中途的产物形态来比。
+> 每个版本段落英文在前、中文在后；CI 把整段复制成 Release 正文，所以 GitHub Release 页面两种语言同页显示。
+> Entries come from `git log <previous tag>..<this tag>` — a defect in code this release itself adds is not a
+> fix. English first, 中文 second.
+
 ## v0.5.4
 
 ### English
 
-- **Five single-file binaries, nothing to install**: `win-x64`, `win-arm64`, `linux-x64`,
-  `linux-arm64` and `osx-arm64`. Each is a self-contained executable. A 64-bit process is required.
-- **Runs on Linux and macOS**: the parts that used to fail outright on those systems now work — the
-  memory budget `batch` keeps to, the memory it hands back, and the core count it sizes its workers
-  from are all read from the platform's own information.
-- **Honors container and WSL limits**: inside a container the tool sized itself against the host, which
-  meant it could be killed by the kernel for taking memory the container never had. Both cgroup
-  generations are now respected and the limit is never exceeded; `batch` prints one line at startup
-  naming where each number came from.
-- **Resized textures are not identical across machines**: the tiers that actually change pixel size
-  (`preset 2x` / `4x`) can land a few pixel components one unit apart depending on the CPU the work ran
-  on. Dimensions, formats and entry tables are unaffected, and the default tier (`1x`) is byte-identical
-  everywhere. When you compare outputs produced on a different machine, compare structure, not hashes.
-- **macOS: no more stall on every texture**: the memory reading on Apple silicon was always zero, which
-  made `batch` wait a couple of seconds before each `.tex` and then continue anyway. The files were
-  correct — conversion was simply slow, with nothing in the output to point at. If a memory reading ever
-  fails now, the failure itself is written into the number instead of showing up as `0MB`.
-- **`mpkg` → `pkg` (reverse conversion)**: new batch `mode: "pkg"` turns a mobile package back into a PC
-  one — PC container magic, the resized textures re-encoded losslessly as PNG, and the mobile-only
-  `texturereduction` key removed from `scene.json`. Every entry the conversion has no reason to touch is
-  copied byte for byte. See the README `mode: "pkg"` section for the full semantics and limits.
-- **Project directory → `pkg` (packing)**: new `pack` command and batch `mode: "pack"`, the inverse of
-  `extract`. Give it a wallpaper project folder — or a parent directory holding several — and you get one
-  `.pkg` per project with `project.json` and the preview image written next to it, which is the layout a
-  Workshop subscription uses. Source images are dropped when the same name already exists as a `.tex`,
-  otherwise they are wrapped into a texture WE itself recognizes; a target that exists is never
-  overwritten (`scene.pkg` becomes `scene_1.pkg`). See the README `mode: "pack"` section for the rules.
-- **`pack --dxt` — real block compression**: textures written by `pack` can be encoded as DXT1, DXT3 or
-  DXT5 instead of an embedded PNG/JPEG, which is the size a real WE package keeps them at. It is opt-in
-  (`pack --dxt dxt1|dxt3|dxt5`, or `options.packDxt`) because block compression is lossy; images the
-  encoder won't take (animated GIFs, anything under 4×4) fall back to the embedded form and are reported
-  per file.
-- **Per-wallpaper options**: an entry in a `mode: mpkg` manifest can now carry its own `options` —
-  container magic, audio retention, compression, reduction tier — and anything it doesn't state falls
-  back to the global settings. Combinations that only become illegal after that merge are rejected with
-  the wallpaper's id before a single package is written, so one batch can run the whole queue instead of
-  one batch per tier.
-- **`preset` instead of hand-set keys** (`options.preset` / `wallpapers[].options.preset`): `1x`, `2x` and
-  `4x` stand for the matching reduction and ETC2 settings, so you name the tier instead of computing the
-  pair yourself. Keys you write explicitly still win over the preset, which keeps "2× but stay RGBA8"
-  expressible, and a name that isn't a tier stops the run instead of quietly shipping everything at full
-  size.
-- **`mpkgNoDematerialize` — new container, untouched pixels**: copies every `.tex` verbatim. This is the
-  switch you want when a phone draws something wrong and you need to rule the pixel side out first. With
-  nothing resized, the mobile texture-reduction key is not written, because a key claiming ÷2 over
-  full-size textures wastes half the phone's texture budget.
-- **`mpkgShrinkDx` — shrink DXT without changing pixel format**: DXT textures used to be resized only
-  when ETC2 encoding was asked for as well, so choosing 4× on a DXT-heavy wallpaper changed nothing at
-  all. Resizing DXT to RGBA8 makes those textures bigger, which is why this stays off by default.
-- **`mode: "inspect"` — check before you convert**: reports what each package actually holds — texture
-  formats, how much of it is DXT, whether the tier you picked would resize anything — and writes nothing,
-  so it is the one mode that needs no `output`. A package that no tier can shrink is now visible before
-  you ship it instead of in the run summary afterwards. It reads the same tier keys, with the same
-  precedence, as `mode: mpkg`.
-- **`info` now does what the README promised**: `info -t <dir>` really dumps TEX structure, the command
-  returns proper exit codes and names the path it failed on, and a corrupt file gives a per-line error
-  instead of a raw stack trace. `--sortby extension` never matched anything and is fixed; mipmap lines
-  now also show LZ4 status and the uncompressed size.
-- **Manifest key renamed to `options.singleDir`**: the flat-output switch used to be driven by
-  `keepSubfolderStructure`, a name that says the opposite of what the flag does. The new key matches
-  `-s/--singledir`; the old one is still read but prints a deprecation notice, and with both present
-  `singleDir` wins.
-- **Mask textures decode correctly**: RG88 unpacked with two channels missing, so R8/RG88 masks came out
-  wrong.
-- **Video textures can be written**: the mp4-inside-a-TEX layout threw "not supported" before; packages
-  carrying video textures now round-trip.
-- **Same wallpaper title, same file name on every system**: output names are cleaned with one fixed rule
-  instead of the platform's own, so a title containing `:` or `?` no longer produces different file names
-  on Linux and macOS than on Windows.
-- **About 10 MB smaller to download**: the JSON library behind the files we write was replaced. Output
-  bytes are unchanged.
-- **Existing output is untouched**: what v0.5.3 wrote, v0.5.4 writes the same way, byte for byte,
-  including the `.tex-json` sidecar format that front-ends read.
-- **Command-line text no longer follows your system language**: help and errors are always English. They
-  used to mix the parser's translated strings with our own hand-written ones, so the wording changed
-  between machines.
-- **Help shows defaults and units** — `-o` prints `./output`, `-b` prints `name`, and options carry
-  `<DIR>` / `<EXTS>` / `<KB>` / `<PERCENT>` / `<N>` / `<FILE>`; `--threads 0` now says what it actually
-  does (follow the manifest) instead of promising the core count.
-- **Docs**: the README gains the full manifest key table (each key's type, default and matching
-  command-line option), the batch exit codes and the thread-count precedence; `README.zh-CN.md` and this
-  bilingual changelog are new.
-- **`interactive` mode removed**: nothing used it, and its prompt pointed at a `help` command that never
-  existed. Use `--help`.
-- **Archives hold only what you run**: the zip / tar.gz contains the executable and
-  `THIRD-PARTY-NOTICES.txt`. Debug symbols used to ride along, because the whole publish directory was
-  archived — tens of megabytes you never touch.
-- **Third-party notices match what's in the binary**: the command-line parser entry named a project this
-  release no longer uses; it now names the one actually shipped.
-- **Needs a 64-bit process**: the memory budget is sized around that, so there is deliberately no
-  `win-x86` or 32-bit ARM build — a 32-bit process would run out of memory instead of waiting for room.
-- **Intel Macs run the .NET 10 build**: there is no native binary for them; `osx-arm64` needs Apple
-  silicon.
+- **New**: Linux and macOS binaries and a `win-arm64` build — the release is five NativeAOT single-file
+  executables (`win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`, `osx-arm64`). v0.5.3 shipped a single
+  Windows executable.
+- **New**: batch `mode: "mpkg"` — a PC package converted for phones: textures resized, re-encoded as ETC2,
+  shaders rewritten to GLSL ES, entries converted in parallel. Reading `.mpkg` already worked in v0.4.3;
+  producing one did not.
+- **New**: batch `mode: "pkg"` — an `.mpkg` back into a PC package: resized textures re-encoded losslessly
+  as PNG, `texturereduction` dropped from `scene.json`, entries the conversion doesn't touch copied byte
+  for byte.
+- **New**: `pack` command and batch `mode: "pack"` — a wallpaper project directory becomes a `.pkg`, with
+  `project.json` and the preview written next to it. Source images with a same-named `.tex` are dropped,
+  and an existing target is never overwritten (`scene.pkg` → `scene_1.pkg`).
+- **New**: `pack --dxt dxt1|dxt3|dxt5` / `options.packDxt` — packed textures written as DXT1/DXT3/DXT5
+  instead of embedded PNG/JPEG. Off by default; images the encoder rejects (animated GIFs, under 4×4) fall
+  back and are reported per file.
+- **New**: batch `mode: "inspect"` — reports the texture formats in a package, how much of it is DXT, and
+  whether the selected tier resizes anything. Writes nothing, so it needs no `output`.
+- **New**: `options.preset` (`1x` / `2x` / `4x`) sets the reduction tier and the ETC2 encoding together;
+  keys written explicitly override it. `2x` / `4x` output can differ by one unit in a few pixel components
+  between CPUs, so compare structure rather than hashes across machines.
+- **New**: `wallpapers[].options` — per-wallpaper overrides of the `mode: mpkg` keys (`preset`, `mpkgMagic`,
+  `keepAudio`, `noLz4`, `mpkgReduction`, `mpkgEtc2`, `mpkgNoShaderCompat`, `mpkgNoDematerialize`,
+  `mpkgShrinkDx`), falling back to the global options per key.
+- **New**: `options.mpkgNoDematerialize` copies every `.tex` verbatim and writes no reduction key;
+  `options.mpkgShrinkDx` resizes DXT textures without changing their pixel format.
+- **New**: on Linux, `batch` sizes its memory budget from `/proc/meminfo` and its worker count from the
+  physical core count, and honors cgroup v1/v2 and WSL limits; it prints one line at startup naming the
+  source of each number.
+- **New**: documentation — the README lists every manifest key with its type, default and matching
+  command-line option, plus the batch exit codes and thread-count precedence. `README.zh-CN.md` is new.
+- **Changed**: texture and GIF conversion is faster — about 14% off a full-package run and 19% off a
+  single-frame GIF, measured before and after the change on one build; output bytes are unchanged.
+- **Changed**: `info -t <dir>` dumps TEX structure, returns proper exit codes, names the path it failed on,
+  gives one error line per corrupt file, and shows LZ4 status and the uncompressed size on mipmap lines.
+- **Changed**: output file names are sanitized with one fixed rule, so the same wallpaper title gives the
+  same name on Windows, Linux and macOS.
+- **Changed**: help and errors are always English, and show defaults and units — `-o` prints `./output`,
+  options carry `<DIR>` / `<EXTS>` / `<KB>` / `<PERCENT>` / `<N>` / `<FILE>`.
+- **Changed**: each archive holds the executable and `THIRD-PARTY-NOTICES.txt`; the notices list now matches
+  the packages actually shipped.
+- **Deprecated**: `keepSubfolderStructure` — use `options.singleDir`, which matches `-s/--singledir`. The
+  old key is still read and prints a notice; `singleDir` wins when both are present.
+- **Removed**: `interactive` mode. Use `--help`.
+- **Fixed**: entry names are counted in UTF-8 bytes on write, and the read limit goes from 255 to 1024
+  bytes; an over-long name now errors instead of truncating and misaligning the rest of the entry table.
+- **Fixed**: R8 and RG88 masks came out wrong; RG88 decoded with two channels missing.
+- **Fixed**: `--sortby extension` never matched anything.
 
 ### 中文
 
-- **五份单文件产物，拿到就能跑**：`win-x64`、`win-arm64`、`linux-x64`、`linux-arm64`、`osx-arm64`，
-  每份都是自带运行时的独立可执行文件，不用先装什么东西。需要 64 位进程。
-- **Linux 与 macOS 上能用了**：此前在这些系统上直接报错的那几处 —— `batch` 守的内存预算、用完归还的内存、
-  按核数定的并发 —— 现在都按本机口径工作。
-- **认容器与 WSL 的限额**：容器里过去按宿主口径放人，可能被内核以"用了根本没有的内存"直接杀掉。现在两代
-  cgroup 都读、绝不越过限额；`batch` 启动时打一行，说清每个数字各自来自哪个口径。
-- **缩放过的纹理不保证跨机器逐字节相同**：真的改了像素尺寸的档位（`preset 2x` / `4x`）在不同 CPU 上可能有
-  个别像素分量差 1；尺寸、格式、条目表都不受影响，默认档 `1x` 在哪台机器上都一致。换机器比对产物时比结构，
-  别比哈希。
-- **macOS：每张纹理不再空等**：Apple 芯片上可用内存一直读成 0，于是 `batch` 每张 `.tex` 之前等上约两秒，
-  然后照样放行。产物是对的，只是慢，而输出里没有任何线索可查。现在读失败会把是哪一步、带什么错误码写在读数
-  本身里，而不是留一个 `0MB` 让人去猜。
-- **`mpkg` → `pkg`（手机包转回 PC 包）**：新增 batch `mode: "pkg"`。按 PC 魔数重建容器、把缩放过的纹理无损
-  重编码回 PNG、并从 `scene.json` 删掉手机专用的 `texturereduction` 键；转换没理由动的条目原样搬运。完整
-  语义与限制见 README 的 `mode: "pkg"` 章节。
-- **工程目录 → `pkg`（打包）**：新增 `pack` 命令与 batch `mode: "pack"`，是 `extract` 的反向。输入是壁纸的
-  散文件目录（编辑器的工程目录，或装着多个工程的父目录），输出每个工程一个 `.pkg`，并把 `project.json` 与
-  预览图写在它旁边 —— 工坊订阅目录就是这个布局。源图在有同名 `.tex` 时丢掉，否则封成 WE 认得的纹理形态；
-  已存在的目标不覆盖（`scene.pkg` 变成 `scene_1.pkg`）。完整规则见 README 的 `mode: "pack"` 章节。
-- **`pack --dxt` —— 真正的块编码**：`pack` 封出的纹理可以编成 DXT1/DXT3/DXT5，而不是内嵌 PNG/JPEG —— 真实
-  WE 包里的纹理就是按这个尺寸放的。要显式开（`pack --dxt dxt1|dxt3|dxt5`，或 `options.packDxt`），因为块
-  编码是有损的；编码器拒收的图（动图、小于 4×4）回落内嵌形态，逐文件上报。
-- **条目级打包选项（`wallpapers[].options`）**：`mode: mpkg` 清单里的单条壁纸现在可以带上自己的 `options` ——
-  容器魔数、音频保留、压缩、缩小档位 —— 没写的逐键回落全局设置。只有合并之后才成立的非法组合会在动手之前
-  带着壁纸 id 报错，而不是跑到那张壁纸才炸。这才让一批就能把整条队列发完，而不是一个档位一批；其它 mode
-  不受影响。
-- **报档位就行（`options.preset` / `wallpapers[].options.preset`）**：`1x`、`2x`、`4x` 对应到该档该做的缩小与
-  ETC2 编码，调用方报档位名即可，不必自己复刻这对规则。写明了的键仍然压过预设，所以"2× 但仍发 RGBA8"
-  表达得出来；档位名写错按清单错误停下，不会悄悄退回 `1x` 把一整批按原始尺寸发出去还报告成功。
-- **`mpkgNoDematerialize` —— 只换容器，像素一字节不动**：所有 `.tex` 原样照搬。手机上画错时你想先排除掉的
-  就是像素这一侧，这条是给那个场景用的。什么都没缩就不写 `texturereduction`，并说明为什么 —— 键写着 ÷2、
-  载荷却是满尺寸，是那种在 PC 上看着没事、在手机侧白占一半纹理预算的产物。
-- **`mpkgShrinkDx` —— 缩 DXT 但不换像素格式**：DXT 纹理以前只有连带要求编 ETC2 时才会缩，所以 DXT 密集的
-  壁纸无论选几×、只要不顺便换格式就一字节不动，而"选了 4× 其实什么都没缩"在读数里看不出来。现在缩小和像素
-  格式是两颗独立开关。把 DXT 缩发放成 RGBA8 会让它比源文件更大，这就是这颗开关默认关着的原因。
-- **`mode: "inspect"` —— 发包之前先看清**：报告每个包到底装了什么 —— 纹理格式、DXT 占多少字节、你选的档位
-  会不会真的动它 —— 并且什么都不写，所以是唯一不需要 `output` 的模式。哪一档都缩不动的包现在在动手前就
-  看得见，而不是跑完从一句"缩小 0"里猜它是没东西可缩还是开关没开。档位键读的就是 `mode: mpkg` 那一套，
-  优先级也完全相同。
-- **`info` 现在真能用**：`info -t <dir>` 会 dump TEX 结构（README 早就这么承诺，代码一直没做）；返回正确
-  退出码、失败时把出错的路径回显出来，损坏文件给一行报错而不是裸抛异常。`--sortby extension` 以前永远匹配
-  不到，已修；mip 行还多报 `lz4` 与解压后的字节数。
-- **平铺输出的键改名 `options.singleDir`**：旧键 `keepSubfolderStructure` 的名字与它做的事正好相反。新键与
-  `-s/--singledir` 同名同义；旧键仍可读取，但会打一次弃用提示，两键并存时 `singleDir` 获胜。
-- **遮罩纹理解码修好**：R8 / RG88 这两种遮罩此前通道解包缺着，解出来是错的。
-- **视频纹理能写了**：mp4 嵌在 TEX 里的那种布局以前直接抛"不支持"。
-- **同一标题在各平台得到同一文件名**：输出名清洗改用一套固定规则，标题里带 `:` 或 `?` 的壁纸在 Linux、
-  macOS 上不再得到与 Windows 不同的文件名。
-- **下载小了约 10MB**：写文件用的 JSON 库换掉了，写出来的字节没变。
-- **老产物的字节没变**：v0.5.3 写出来的东西，v0.5.4 逐字节一样地写出来，包括前端要读的 `.tex-json` 侧车格式。
-- **命令行输出不再跟着系统语言走**：帮助与错误一律英文。以前解析器自带的翻译与手写英文混在同一屏，换台机器
-  措辞就变。
-- **帮助里显示默认值与单位**：`-o` 标出 `./output`、`-b` 标出 `name`，选项带上 `<DIR>`/`<EXTS>`/`<KB>`/
-  `<PERCENT>`/`<N>`/`<FILE>`；`--threads 0` 现在写的是它真正做的事（沿用 manifest 的值），不再承诺核数。
-- **文档**：README 补上 manifest 全键表（每个键的类型、默认值、对应的命令行选项）、batch 的退出码与线程数
-  优先级；新增中文 README（`README.zh-CN.md`）与这份中英双语更新日志。
-- **`interactive` 模式去掉**：没有人用它，而它的提示语指向一个并不存在的 `help` 命令。用 `--help`。
-- **压缩包里只有你要跑的东西**：现在只有可执行文件与 `THIRD-PARTY-NOTICES.txt`。调试符号此前是跟着发的 ——
-  几十 MB 你永远不会碰。
-- **第三方清单与二进制里真正编进去的东西对上了**：命令行解析那一项写的是一个已经不用的项目。
-- **需要 64 位进程**：内存预算是按这个前提定的，所以刻意不发 `win-x86` 与 32 位 ARM —— 32 位进程会直接
-  内存耗尽，而不是等出空间来。
-- **Intel Mac 走 .NET 10 那份**：没有它的原生二进制；`osx-arm64` 只在 Apple 芯片上跑。
+- 新增：Linux 与 macOS 产物，外加 `win-arm64` —— 发布物是五份 NativeAOT 单文件（`win-x64`、`win-arm64`、
+  `linux-x64`、`linux-arm64`、`osx-arm64`）；v0.5.3 只有一份 Windows 可执行文件。
+- 新增：batch `mode: "mpkg"` —— 把 PC 包转成手机用的包：纹理缩小、重编成 ETC2、着色器改写成 GLSL ES，
+  条目并行转换。v0.4.3 起就读得懂 `.mpkg`，但造不出来。
+- 新增：batch `mode: "pkg"` —— 把 `.mpkg` 转回 PC 包：缩放过的纹理无损重编码回 PNG，`scene.json` 里的
+  `texturereduction` 去掉，转换没理由动的条目逐字节搬运。
+- 新增：`pack` 命令与 batch `mode: "pack"` —— 壁纸的散文件目录打回 `.pkg`，`project.json` 与预览图写在它
+  旁边。有同名 `.tex` 的源图丢掉，已存在的目标不覆盖（`scene.pkg` 变成 `scene_1.pkg`）。
+- 新增：`pack --dxt dxt1|dxt3|dxt5`（`options.packDxt`）—— 封出的纹理写成 DXT1/DXT3/DXT5，而不是内嵌
+  PNG/JPEG。默认关；编码器拒收的图（动图、小于 4×4）回落内嵌形态，逐文件上报。
+- 新增：batch `mode: "inspect"` —— 报告包里的纹理格式、DXT 占多少、所选档位会不会真的动它。什么都不写，
+  所以不需要 `output`。
+- 新增：`options.preset`（`1x` / `2x` / `4x`）一次定好缩小档位与 ETC2 编码，写明了的键压过预设。`2x` / `4x`
+  的产物在不同 CPU 上可能有个别像素分量差 1，换机器比对请比结构而不是哈希。
+- 新增：`wallpapers[].options` —— 单条壁纸覆盖 `mode: mpkg` 那九个键（`preset`、`mpkgMagic`、`keepAudio`、
+  `noLz4`、`mpkgReduction`、`mpkgEtc2`、`mpkgNoShaderCompat`、`mpkgNoDematerialize`、`mpkgShrinkDx`），
+  没写的键各自回落全局。
+- 新增：`options.mpkgNoDematerialize` 让所有 `.tex` 原样拷贝、不写缩小键；`options.mpkgShrinkDx` 缩 DXT
+  纹理但不换像素格式。
+- 新增：Linux 上 `batch` 的内存预算取自 `/proc/meminfo`、并发数取自物理核数，并认 cgroup v1/v2 与 WSL 的
+  限额；启动时打一行说明每个数字的来源。
+- 新增：文档 —— README 逐个列出 manifest 键的类型、默认值与对应的命令行选项，并补上 batch 的退出码与线程数
+  优先级；新增 `README.zh-CN.md`。
+- 变更：纹理与 GIF 转换提速 —— 整包墙钟约省 14%、单帧 GIF 约省 19%（同一构建下改动前后对比），输出字节不变。
+- 变更：`info -t <dir>` 会 dump TEX 结构，返回正确退出码、回显出错的路径，损坏文件一条一行报错，mip 行报
+  `lz4` 与解压后的字节数。
+- 变更：输出名清洗改用一套固定规则，同一标题在 Windows、Linux、macOS 上得到同一文件名。
+- 变更：帮助与错误一律英文，并标出默认值与单位 —— `-o` 标出 `./output`，选项带上 `<DIR>`/`<EXTS>`/`<KB>`/
+  `<PERCENT>`/`<N>`/`<FILE>`。
+- 变更：每个包里是可执行文件与 `THIRD-PARTY-NOTICES.txt`；第三方清单改成实际发布出去的包。
+- 弃用：`keepSubfolderStructure` —— 改用 `options.singleDir`，与 `-s/--singledir` 同名。旧键仍可读取并打一次
+  提示，两键并存时 `singleDir` 获胜。
+- 移除：`interactive` 模式，改用 `--help`。
+- 修复：写侧条目名按 UTF-8 字节计数，读侧上限从 255 提到 1024 字节；超界的名字改为报错，不再截断后让后面
+  的条目表跟着错位。
+- 修复：R8 / RG88 遮罩纹理解出来是错的，RG88 的解包缺着两个通道。
+- 修复：`--sortby extension` 永远匹配不到。
 
 ## v0.5.3
 

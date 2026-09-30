@@ -52,6 +52,51 @@ jobs:
           if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
           echo "冒烟通过: $exe ($len 字节)"
 
+  # Linux ARM64:GitHub 有原生 arm runner(ubuntu-24.04-arm,公开仓库可用),所以这个 job 是**在目标架构上
+  # 构建并在目标架构上执行** —— 不需要交叉链接,也不需要"编出来却没法跑"这种半证。
+  # 判据与 x64 两条一样(体积阈值 + --help),再加一条 gate 读数:内存闸必须读出非零 avail。这里不断言来源
+  # 字面量,因为 Linux 侧合法值有三种(MemAvailable / sysinfo / cgroup 口径),而非零本身就排除了 "unavailable"。
+  build-test-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建
+        run: dotnet build RePKG_Re.sln -c Release --nologo -v:m
+
+      - name: 单元测试
+        run: dotnet test RePKG_Re.Tests/RePKG_Re.Tests.csproj -c Release --nologo -v:m
+
+      - name: 发布 linux-arm64 NativeAOT 并冒烟
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang zlib1g-dev
+          dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotLinuxArm64 --nologo -v:m
+          exe=RePKG_Re/bin/publish-aot-linux-arm64/RePKG_Re
+          test -f "$exe" || { echo "未找到 AOT 产物: $exe"; exit 1; }
+          len=$(stat -c%s "$exe")
+          [ "$len" -ge 5242880 ] || { echo "AOT 产物体积异常($len 字节 < 5MB),疑似退回框架依赖"; exit 1; }
+          uname -m   # 把"这台 runner 真的是 aarch64"钉进日志,否则产物架构只能靠 profile 名推
+          file "$exe" > /tmp/aot-file.txt; cat /tmp/aot-file.txt
+          grep -qE 'ARM aarch64|aarch64' /tmp/aot-file.txt || { echo "产物不是 arm64 ELF: $(cat /tmp/aot-file.txt)"; exit 1; }
+          if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
+          echo "冒烟通过: $exe ($len 字节)"
+
+      # gate 行在动手拆包之前就打印,所以 input 指向不存在的路径也照样有读数。
+      # 断言非零的理由与 mac 那条同:avail=0 会让内存闸每条 TEX 空等 100×20ms 后照样放行,静默退化。
+      - name: 验 linux-arm64 内存采样口径
+        run: |
+          exe=RePKG_Re/bin/publish-aot-linux-arm64/RePKG_Re
+          printf '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}\n' > gate-probe.json
+          "$exe" batch --manifest gate-probe.json --threads 1 >/dev/null 2>gate-probe.log || echo "batch 退出码 $? (与本判据无关,只核对读数)"
+          cat gate-probe.log
+          grep -qE 'avail=[1-9][0-9]*MB \(' gate-probe.log || { echo "linux-arm64 内存采样失败:gate 行不是 avail>0"; exit 1; }
+          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \([^)]*\)' gate-probe.log | head -1)"
+
   build-test:
     # NativeAOT 只能在目标平台链接(Windows 上产 win-x64 exe),不能用 ubuntu
     runs-on: windows-latest

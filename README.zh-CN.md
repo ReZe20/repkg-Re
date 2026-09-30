@@ -24,7 +24,7 @@ PKG 与 TEX 格式均由作者逆向得出。
 - 批处理模式：把 PC 包转换为移动端 `.mpkg` 包，以及反向转换
 
 ### 平台
-可在 Windows、Linux、macOS 上以 .NET 10（JIT）运行，并提供 win-x64、linux-x64 与 Apple 芯片 macOS（`osx-arm64`）的 NativeAOT 单文件二进制。Intel Mac 没有 AOT 产物——编译器不能交叉编译，CI 也没有 Intel mac runner——只能用 JIT 那份。macOS 侧的内存采样：总量与页大小走 `sysctl(CTL_HW, …)`，页计数走 Mach 的 `host_statistics64`；CI 在 Apple 芯片的 runner 上核对它，断言 `batch` 启动那行 gate 报的是非零的 `avail=…MB (sysctl+mach)`，因为读失败不会报错，只会让每张纹理静默多等约 2 秒。
+可在 Windows、Linux、macOS 上以 .NET 10（JIT）运行，并提供 `win-x64`、`win-arm64`、`linux-x64`、`linux-arm64` 与 `osx-arm64` 五份 NativeAOT 单文件二进制——每一份都在对应架构自己的 CI runner 上构建、冒烟并核对内存读数，没有一份是"交叉编出来没跑过"的。两处空缺由工具链与策略决定，不是漏做：Intel Mac 没有 AOT 产物（NativeAOT 不能交叉编译，CI 也没有 Intel mac runner，只能用 JIT 那份）；也没有 32 位产物——内存闸把在途工作量封顶在 4GB，32 位地址空间撑不住这个上限，硬跑会在解码器里抛 `OutOfMemoryException` 而不是退让。macOS 侧的内存采样：总量与页大小走 `sysctl(CTL_HW, …)`，页计数走 Mach 的 `host_statistics64`；CI 在 Apple 芯片的 runner 上核对它，断言 `batch` 启动那行 gate 报的是非零的 `avail=…MB (sysctl+mach)`，因为读失败不会报错，只会让每张纹理静默多等约 2 秒。
 
 ### 命令
 - `--help`（或 `-h`、`-?`）- 列出命令；`extract --help`、`info --help`、`batch --help` 列出单个命令的选项

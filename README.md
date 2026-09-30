@@ -24,13 +24,17 @@ Feel free to report errors.
 
 ### Platforms
 Runs on Windows, Linux and macOS on .NET 10 (JIT), and ships NativeAOT single-file
-binaries for win-x64, linux-x64 and macOS on Apple silicon (`osx-arm64`). Intel Macs
-have no AOT artifact — the compiler cannot cross-compile and CI has no Intel macOS
-runner — so they use the JIT build. macOS memory sampling takes the total and the page size
-from `sysctl(CTL_HW, …)` and the page counts from Mach's `host_statistics64`; CI checks it on
-an Apple-silicon runner by asserting the `batch` startup gate line reports a non-zero
-`avail=…MB (sysctl+mach)`, because a failed read degrades silently into a ~2 s stall per
-texture rather than an error.
+binaries for `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64` and `osx-arm64` — each one
+built, smoke-tested and sampled for on that architecture's own CI runner, so no artifact
+here is a cross-compiled guess. Two gaps are set by the toolchain and by policy, not by
+oversight: Intel Macs get no AOT binary (NativeAOT cannot cross-compile and CI has no
+Intel macOS runner), and there is no 32-bit build — the memory gate caps in-flight work at
+4 GB, which a 32-bit address space cannot honour, so a 32-bit run would throw
+`OutOfMemoryException` inside the decoder rather than back off. macOS memory sampling takes
+the total and the page size from `sysctl(CTL_HW, …)` and the page counts from Mach's
+`host_statistics64`; CI checks it on an Apple-silicon runner by asserting the `batch`
+startup gate line reports a non-zero `avail=…MB (sysctl+mach)`, because a failed read
+degrades silently into a ~2 s stall per texture rather than an error.
 
 ### Commands
 - `--help` (or `-h`, `-?`) - lists the commands; `extract --help`, `info --help` and `batch --help` list the options of one command

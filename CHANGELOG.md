@@ -59,6 +59,19 @@
   ~2 s stall on each `.tex` — no crash, no error, no nonzero exit. Tag v0.5.4 was the first execution
   on Apple hardware, and the check cannot be skipped while still shipping: `build` requires
   `build-macos`, so a failed assertion means no Release for any platform.
+- **ARM64 joins the same release**: `win-arm64` and `linux-arm64`, so v0.5.4 publishes five
+  binaries. Neither is cross-compiled — each builds on its own architecture's hosted runner
+  (`windows-11-arm`, `ubuntu-24.04-arm`), and each job proves the *architecture* before packaging:
+  Linux via `file` (must be an `aarch64` ELF), Windows by reading the PE `Machine` field (must be
+  `0xAA64`). That check is not ceremony: a fallback to x64 yields the same file name, the same ≥5 MB
+  size, and — on Windows on ARM — a perfectly passing `--help`, because the emulation layer runs x64
+  code happily. `ci.yml` gained `build-test-linux-arm64` (JIT build + full suite + AOT publish +
+  `--help` + gate reading) for the same reason its mac sibling exists, and the release job mirrors
+  `build-linux`: own artifact name, `upload-artifact`, `build` needs it, and the whole-directory
+  symbol guard runs before the tar. What is deliberately *not* added: 32-bit (`win-x86` /
+  `linux-arm`) — `MemoryGate`'s 4 GB in-flight cap is a *system-memory* ceiling, not an address-space
+  one, so a 32-bit process would take `OutOfMemoryException` inside the decoder instead of backing
+  off; making it safe means a separate cap, not a new RID.
 - **macOS memory sampling could not have returned anything but 0** (both errors surfaced on the first
   run on Apple hardware): the page counts were read from `CTL_VM` names `30/15/17/27`, which is
   *FreeBSD*'s numbering — xnu's `CTL_VM` exposes only `VM_METER`, `VM_LOADAVG`, `VM_MACHFACTOR` and
@@ -335,6 +348,15 @@
   是每张 `.tex` 静默多花约 2 秒，不崩、不报错、退出码也正常。tag v0.5.4 是这段代码第一次在 Apple 硬件上
   执行，而"跳过检查还能把 mac 包发出去"这条路不存在：`build` 依赖 `build-macos`，断言一红三个平台的 Release
   一起不出。
+- **同一版本补上 ARM64**：`win-arm64` 与 `linux-arm64`，v0.5.4 一共五份产物。两个都不是交叉编译 —— 各自在
+  本架构的 hosted runner 上构建（`windows-11-arm`、`ubuntu-24.04-arm`），并且打包前先证明**架构本身**：
+  Linux 用 `file`（必须是 `aarch64` 的 ELF），Windows 直接读 PE 的 `Machine` 字段（必须是 `0xAA64`）。
+  这道校验不是仪式：退回 x64 会产生一模一样的文件名、同样 ≥5MB 的体积，而在 Windows on ARM 上连 `--help`
+  都会漂亮地通过 —— 模拟层跑 x64 代码毫无问题。`ci.yml` 新增 `build-test-linux-arm64`（JIT 构建 + 全量测试 +
+  AOT 发布 + `--help` + gate 读数），理由与 mac 那一支相同；发布 job 照 `build-linux` 的形状办：自己的产物名、
+  `upload-artifact`、`build` 依赖它、整目录打包前跑符号守卫。刻意**没加**的是 32 位（`win-x86` / `linux-arm`）：
+  `MemoryGate` 那个 4GB 封顶是**系统内存**口径，不是地址空间口径，32 位进程照它跑会在解码器里抛
+  `OutOfMemoryException` 而不是退让；要真支持得先给一个独立上限，那不是加个 RID 就能了事的事。
 - **macOS 的内存采样本来不可能返回非零**（第一次真机执行就抓出两处错）：页计数是从 `CTL_VM` 的名号
   `30/15/17/27` 读的，那是 **FreeBSD** 的编号 —— xnu 的 `CTL_VM` 底下只有 `VM_METER`、`VM_LOADAVG`、
   `VM_MACHFACTOR`、`VM_SWAPUSAGE`，既没有页大小也没有页计数（`bsd/sys/sysctl.h`）；而 `sysctl` 的第一个参数

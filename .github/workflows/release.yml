@@ -129,8 +129,127 @@ jobs:
           name: osx-arm64
           path: ${{ env.artifact_name }}
 
+  # ARM 两条 job 与上面两条同形(判据一致),区别只在 RID 与 runner:GitHub 现在有 arm64 的
+  # hosted runner(ubuntu-24.04-arm / windows-11-arm),所以链接器和执行都在目标架构上,
+  # 不需要交叉工具链 —— 于是 --help 与 gate 读数第一次发生在真 ARM 硬件上。
+  # 内存采样判据照抄 mac 那条的理由(见 build-macos 的注释):预算读成 0 不崩不报错,
+  # 只是每条 TEX 白等 2 秒,只能从数字看出来。Linux 侧来源串是 MemAvailable / sysinfo / cgroup *,
+  # Windows 侧固定 GlobalMemoryStatusEx。
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 发布 linux-arm64 NativeAOT（自包含单文件，免 .NET 运行时）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang zlib1g-dev
+          dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotLinuxArm64 --nologo -v:m
+
+      - name: 冒烟验证 AOT 产物可独立运行
+        run: |
+          exe=RePKG_Re/bin/publish-aot-linux-arm64/RePKG_Re
+          test -f "$exe" || { echo "未找到 AOT 产物: $exe"; exit 1; }
+          chmod +x "$exe"
+          len=$(stat -c%s "$exe")
+          [ "$len" -ge 5242880 ] || { echo "AOT 产物体积异常($len 字节 < 5MB),疑似退回框架依赖"; exit 1; }
+          # 架构自己验,不靠 profile 名推:退回 x64 或退回框架依赖都长得像"成功",而产物文件名一模一样
+          file "$exe" > /tmp/aot-file.txt; cat /tmp/aot-file.txt
+          grep -qE 'ARM aarch64|aarch64' /tmp/aot-file.txt || { echo "产物不是 arm64 ELF: $(cat /tmp/aot-file.txt)"; exit 1; }
+          if ! "$exe" --help > /dev/null; then echo "--help 冒烟失败"; exit 1; fi
+          echo "冒烟通过: $exe ($len 字节)"
+
+      - name: 验 ARM 上的内存采样口径
+        run: |
+          exe=RePKG_Re/bin/publish-aot-linux-arm64/RePKG_Re
+          printf '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}\n' > gate-probe.json
+          "$exe" batch --manifest gate-probe.json --threads 1 >/dev/null 2>gate-probe.log || echo "batch 退出码 $? (与本判据无关,只核对读数)"
+          cat gate-probe.log
+          grep -qE 'avail=[1-9][0-9]*MB \((MemAvailable|sysinfo|cgroup)' gate-probe.log || { echo "内存采样失败:gate 行不是 avail>0 且来源可辨"; exit 1; }
+          echo "内存采样通过:$(grep -oE 'avail=[0-9]+MB \([^)]*\)' gate-probe.log)"
+
+      - name: 打包 tar.gz
+        run: |
+          ver="${INPUTS_VERSION:-$GITHUB_REF_NAME}"
+          case "$ver" in v*) ;; *) ver=dev ;; esac
+          # 符号文件守卫同 linux-x64/job:find 覆盖 .pdb/.dbg/.dSYM 三种命名。
+          hits=$(find RePKG_Re/bin/publish-aot-linux-arm64 \( -name '*.pdb' -o -name '*.dbg' -o -name '*.dSYM' \) -print)
+          [ -z "$hits" ] || { echo "发布目录混进符号文件: $hits"; exit 1; }
+          tar -C RePKG_Re/bin/publish-aot-linux-arm64 -czf "RePKG_Re-$ver-linux-arm64.tar.gz" .
+          echo "artifact_name=RePKG_Re-$ver-linux-arm64.tar.gz" >> "$GITHUB_ENV"
+
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
+      - name: 交给 release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: ${{ env.artifact_name }}
+
+  build-win-arm64:
+    # windows-11-arm 是 Windows 11 Arm64 hosted runner(镜像自带 MSVC 的 VC.Tools.ARM64,
+    # 链接 arm64 exe 要用它)。该 label 正在切到 Visual Studio 2026 镜像,两版都带 ARM64 工具集;
+    # 若哪天 ARM64 工具集没了,改用 windows-11-vs2026-arm 并核对组件表。
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 发布 win-arm64 NativeAOT（自包含单 exe，免 .NET 运行时）
+        shell: pwsh
+        run: dotnet publish RePKG_Re/RePKG_Re.csproj -c Release -p:PublishProfile=AotWinArm64 --nologo -v:m
+
+      - name: 冒烟验证 AOT exe 可独立运行
+        shell: pwsh
+        run: |
+          $exe = "RePKG_Re/bin/publish-aot-win-arm64/RePKG_Re.exe"
+          if (-not (Test-Path $exe)) { throw "未找到 AOT 产物: $exe" }
+          $len = (Get-Item $exe).Length
+          if ($len -lt 5MB) { throw "AOT exe 体积异常($len 字节 < 5MB),疑似非 AOT 产物" }
+          # 架构自己验:PE 头里 Machine 必须是 0xAA64(ARM64)。退回 x64 的产物文件名一模一样,而这个
+          # runner 本身就是 ARM64、连 x64 exe 都能靠模拟层跑起来 —— 所以"--help exit 0"证明不了架构。
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe).Path)
+          $peOff = [System.BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [System.BitConverter]::ToUInt16($bytes, $peOff + 4)
+          if ($machine -ne 0xAA64) { throw ("产物不是 ARM64 PE: Machine = 0x{0:X4}" -f $machine) }
+          & $exe --help *> $null
+          if ($LASTEXITCODE -ne 0) { throw "AOT exe --help 冒烟失败 exit $LASTEXITCODE" }
+          Write-Host "冒烟通过: $exe ($len 字节),--help exit 0,Machine=0x$($machine.ToString('X4'))"
+
+      - name: 验 ARM 上的内存采样口径
+        shell: pwsh
+        run: |
+          $exe = "RePKG_Re/bin/publish-aot-win-arm64/RePKG_Re.exe"
+          Set-Content -Path gate-probe.json -Value '{"wallpapers":[{"id":0,"input":"./no-such.pkg","output":"./gate-probe-out"}],"options":{"overwrite":true}}' -Encoding UTF8
+          & $exe batch --manifest gate-probe.json --threads 1 2> gate-probe.log | Out-Null
+          Get-Content gate-probe.log
+          if (!(Select-String -Path gate-probe.log -Pattern 'avail=[1-9][0-9]*MB \(GlobalMemoryStatusEx\)' -Quiet)) { throw "内存采样失败:gate 行不是 avail>0 (GlobalMemoryStatusEx)" }
+
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          $ver = if ("${{ inputs.version }}") { "${{ inputs.version }}" } elseif ("${{ github.ref_name }}" -like "v*") { "${{ github.ref_name }}" } else { "dev" }
+          $symbols = @(Get-ChildItem "RePKG_Re/bin/publish-aot-win-arm64" -Recurse -Force -Include "*.pdb","*.dbg")
+          if ($symbols.Count -gt 0) { throw "发布目录混进符号文件: $($symbols.Name -join ', ')" }
+          Compress-Archive -Path "RePKG_Re/bin/publish-aot-win-arm64/*" -DestinationPath "RePKG_Re-$ver-win-arm64.zip"
+          echo "artifact_name=RePKG_Re-$ver-win-arm64.zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: 交给 release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-arm64
+          path: ${{ env.artifact_name }}
+
   build:
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-linux-arm64, build-win-arm64]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -168,6 +287,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: osx-arm64
+
+      - name: 下载 linux-arm64 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-arm64
+
+      - name: 下载 win-arm64 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: win-arm64
 
       - name: 打包 zip 并生成版本介绍
         shell: pwsh
@@ -207,9 +336,14 @@ jobs:
         with:
           tag_name: ${{ env.version }}
           body_path: release-body.md
+          # 同一个 tag 重打(例如 v0.5.4 先出三平台、再补 ARM 两份)时,已有同名资产与已写过的正文
+          # 都要被替换掉 —— 默认 overwrite_assets:false 会让这一步撞名失败,留着一份过期二进制。
+          overwrite_assets: true
           files: |
             RePKG_Re-${{ env.version }}-win-x64.zip
+            RePKG_Re-${{ env.version }}-win-arm64.zip
             RePKG_Re-${{ env.version }}-linux-x64.tar.gz
+            RePKG_Re-${{ env.version }}-linux-arm64.tar.gz
             RePKG_Re-${{ env.version }}-osx-arm64.tar.gz
 
       - name: 创建 Release（自动生成介绍）
@@ -217,8 +351,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.version }}
+          overwrite_assets: true
           files: |
             RePKG_Re-${{ env.version }}-win-x64.zip
+            RePKG_Re-${{ env.version }}-win-arm64.zip
             RePKG_Re-${{ env.version }}-linux-x64.tar.gz
+            RePKG_Re-${{ env.version }}-linux-arm64.tar.gz
             RePKG_Re-${{ env.version }}-osx-arm64.tar.gz
           generate_release_notes: true

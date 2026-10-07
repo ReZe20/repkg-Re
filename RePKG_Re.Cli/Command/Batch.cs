@@ -121,24 +121,36 @@ namespace RePKG_Re.Command
             // 否则开头几秒实际并发达不到 --threads
             ThreadPool.SetMinThreads(_threads, _threads);
 
-            // 无界队列:条目只含元数据(路径/偏移/长度,~100B),内存可控;
-            // 全部入队后再启动 worker,避免有界队列在 worker 启动前被灌满而阻塞
+            // 无界队列:条目只含元数据(路径/偏移/长度,~100B),内存可控。
+            // 队列是 FIFO,所以壁纸按清单顺序消费 —— 一张大壁纸会压住后面所有张(队头阻塞来自顺序本身,
+            // 与 worker 何时起来无关)。
             var queue = new BlockingCollection<BatchEntryItem>();
-            var states = new Dictionary<string, WallpaperState>();
+            // 入队线程写某张壁纸的 state、worker 读它取 pos,两者现在并发跑,所以必须是并发容器
+            var states = new ConcurrentDictionary<string, WallpaperState>();
 
             // 内存闸:预防 OOM(TEX 转换并发按可用内存自适应),worker 数仍是硬上限
             var gate = new MemoryGate();
             gate.Start();
             try
             {
-                foreach (var wallpaper in _wallpapers)
-                    EnqueueWallpaper(wallpaper, queue, states);
-
-                queue.CompleteAdding();
-
+                // worker 先起、逐张入队:包表解析是单线程 IO,和提取重叠后第一张壁纸的条目
+                // 一入队就有人接手,不再有「全部解析完才开始提取」的无进度空窗。
+                // 原先"全部入队后再启动 worker"是给有界队列防灌满的,无界化之后那条理由已经不成立。
                 var workers = new Task[_threads];
                 for (int i = 0; i < workers.Length; i++)
                     workers[i] = Task.Run(() => WorkerLoop(queue, states, gate));
+
+                try
+                {
+                    foreach (var wallpaper in _wallpapers)
+                        EnqueueWallpaper(wallpaper, queue, states);
+                }
+                finally
+                {
+                    // 收尾必须在 finally:入队中途抛异常时若不 CompleteAdding,
+                    // GetConsumingEnumerable 永不结束,下面的 WaitAll 就挂死了
+                    queue.CompleteAdding();
+                }
 
                 Task.WaitAll(workers);
             }
@@ -150,9 +162,11 @@ namespace RePKG_Re.Command
 
         /// <summary>解析壁纸输入 → 条目元数据入全局队列;input 兼容文件与目录:
         /// 单个 .pkg/.mpkg 文件 → 只拆该文件;目录 → 递归枚举目录内所有 pkg/mpkg;
-        /// 解析失败/无条目 → error + done,继续其余壁纸。</summary>
+        /// 解析失败/无条目 → error + done,继续其余壁纸。
+        /// 条目先攒在本地,等这张壁纸的总数定了、state 注册了、start 发了,才整体发布进队列 ——
+        /// worker 与入队线程现在并发跑,不能让它拿到一个 state 还不存在的条目。</summary>
         private void EnqueueWallpaper(BatchWallpaper wallpaper, BlockingCollection<BatchEntryItem> queue,
-            Dictionary<string, WallpaperState> states)
+            ConcurrentDictionary<string, WallpaperState> states)
         {
             FileInfo[] pkgFiles;
             try
@@ -192,8 +206,7 @@ namespace RePKG_Re.Command
                 return;
             }
 
-            var state = new WallpaperState();
-            int total = 0;
+            var pendingItems = new List<BatchEntryItem>();
             foreach (var pkg in pkgFiles)
             {
                 try
@@ -203,10 +216,7 @@ namespace RePKG_Re.Command
                     {
                         var entries = ExtractContext.ParsePkgEntriesTable(stream, reader, out int dataStart);
                         foreach (var entry in _ctx.FilterEntries(entries))
-                        {
-                            queue.Add(new BatchEntryItem(wallpaper.Id, wallpaper.Output, pkg, dataStart, entry));
-                            total++;
-                        }
+                            pendingItems.Add(new BatchEntryItem(wallpaper.Id, wallpaper.Output, pkg, dataStart, entry));
                     }
                 }
                 catch (Exception e)
@@ -215,7 +225,7 @@ namespace RePKG_Re.Command
                 }
             }
 
-            if (total == 0)
+            if (pendingItems.Count == 0)
             {
                 EmitError(wallpaper.Id, wallpaper.Input, "No extractable entries found");
                 EmitWallpaperDone(wallpaper.Id);
@@ -223,22 +233,29 @@ namespace RePKG_Re.Command
             }
 
             Directory.CreateDirectory(wallpaper.Output);
-            state.Total = total;
+            var state = new WallpaperState { Total = pendingItems.Count };
             states[wallpaper.Id] = state;
 
+            // start 必须在条目发布之前:父侧把 start 当"这张壁纸开工"的信号建状态行,
+            // 条目事件早于它到达会让进度条先动起来、状态却还停在"等待"
             Console.WriteLine(
-                $"{{\"id\":{J(wallpaper.Id)},\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{total}}}");
+                $"{{\"id\":{J(wallpaper.Id)},\"type\":\"wallpaper\",\"action\":\"start\",\"total_entries\":{state.Total}}}");
+
+            foreach (var item in pendingItems)
+                queue.Add(item);
         }
 
-        private void WorkerLoop(BlockingCollection<BatchEntryItem> queue, Dictionary<string, WallpaperState> states,
-            MemoryGate gate)
+        private void WorkerLoop(BlockingCollection<BatchEntryItem> queue,
+            ConcurrentDictionary<string, WallpaperState> states, MemoryGate gate)
         {
             foreach (var item in queue.GetConsumingEnumerable())
             {
                 var state = states[item.WallpaperId];
                 int pos = Interlocked.Increment(ref state.Started);
 
-                // 每条目统一发 entry 事件(处理前发出,pos 单调递增,进度不依赖 TEX 转换事件)
+                // 每条目统一发 entry 事件(处理前发出,pos 单调递增,进度不依赖 TEX 转换事件)。
+                // 一条不落是契约:BatchTests.Batch_Entry_Events_Pos_Are_Contiguous_Serial 断言 pos 连号,
+                // 父侧的崩溃定位也读最后一条 entry 的 id —— 按时间节流会同时破坏这两件事。
                 Console.WriteLine(
                     $"{{\"id\":{J(item.WallpaperId)},\"type\":\"entry\",\"entry\":{J(item.Entry.FullPath)},\"pos\":{pos},\"total\":{state.Total}}}");
 
